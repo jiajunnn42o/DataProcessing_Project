@@ -1,0 +1,144 @@
+/* ---------- 颜色变量（默认浅色） ---------- */
+:root{
+  --bg:#ffffff;
+  --bg-2:#f6f7f9;
+  --text:#262730;
+  --muted:#6b7280;
+  --grid:#e5e7eb;
+  --brand:#1f77b4;
+  --good:#2ca02c;
+  --warn:#d62728;
+
+  --side-bg:#0f141a0d;     /* 浅色侧栏微灰 */
+  --side-border:#e5e7eb;
+  --card:#ffffff;
+  --card-border:#e5e7eb;
+
+  --shadow:0 1px 0 rgba(0,0,0,.04);
+}
+
+/* ---------- 深色自动切换（和你右图一致的风格） ---------- */
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0e1117;
+    --bg-2:#1a1d21;
+    --text:#fafafa;
+    --muted:#a1a1aa;
+    --grid:#333841;
+
+    --brand:#60a5fa;
+    --good:#86efac;
+    --warn:#f87171;
+
+    --side-bg:#1a1d21;
+    --side-border:#22262c;
+    --card:#0f141a;
+    --card-border:#22262c;
+
+    --shadow:0 1px 0 rgba(255,255,255,.05);
+  }
+}
+
+/* 若想永久深色：把上面的 @media 整块复制出来，直接替换 :root 即可 */
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  font-family:ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+  background:var(--bg);
+  color:var(--text);
+}
+
+/* 顶部栏（仿 Streamlit header） */
+.app-header{
+  position:sticky; top:0; z-index:50;
+  display:flex; flex-direction:column; gap:6px;
+  padding:18px 28px;
+  background:var(--bg);
+  box-shadow:var(--shadow);
+}
+.app-header .brand{
+  font-weight:800;
+  letter-spacing:.2px;
+  font-size:clamp(20px,2.6vw,36px);
+  line-height:1.2;
+}
+.header-muted{color:var(--muted); font-size:14px}
+
+/* 主布局：左侧固定宽度侧栏 + 右侧内容区 */
+.app-shell{
+  display:grid;
+  grid-template-columns: 280px 1fr;   /* 和 Streamlit 近似宽度 */
+  gap:24px;
+  max-width:1400px;
+  margin:0 auto;
+  padding:20px 24px 48px;
+}
+@media (max-width: 980px){
+  .app-shell{ grid-template-columns: 1fr; }
+}
+
+/* 侧栏样式（贴近 Streamlit 左边层级） */
+.sidebar{
+  position:sticky; top:84px; /* 让侧栏随滚动保持可见 */
+  height:fit-content;
+  background:var(--side-bg);
+  border:1px solid var(--side-border);
+  border-radius:14px;
+  padding:16px 14px;
+}
+.sidebar-title{
+  font-weight:700; margin-bottom:6px;
+  color:var(--muted);
+  text-transform:uppercase; font-size:12px; letter-spacing:.08em;
+}
+.block{ padding:10px 6px 14px; border-bottom:1px dashed var(--side-border) }
+.block:last-child{border-bottom:none}
+.block-title{ font-weight:600; margin:4px 0 8px }
+.block-title.flex{ display:flex; justify-content:space-between; align-items:center }
+.muted{ color:var(--muted) }
+
+/* 单选组 */
+.radio{ display:grid; gap:8px }
+.radio label{ display:flex; gap:8px; align-items:center; cursor:pointer; }
+.radio input[type="radio"]{
+  appearance:none; width:16px; height:16px; border-radius:50%;
+  border:2px solid var(--brand); outline:none; position:relative;
+}
+.radio input[type="radio"]:checked{ background:var(--brand) }
+
+/* 滑杆组 */
+.sliders{ display:grid; gap:8px; margin-top:8px }
+input[type="range"]{
+  width:100%;
+  accent-color: var(--brand);
+}
+.range-labels{
+  display:flex; justify-content:space-between; font-size:12px; color:var(--muted);
+}
+
+/* 内容区 */
+.content{ display:grid; gap:16px }
+
+/* 卡片区（图表） */
+.card{
+  background:var(--card);
+  border:1px solid var(--card-border);
+  border-radius:14px;
+  padding:8px 8px 0;
+}
+.chart{ width:100%; height:540px }
+
+/* 说明条 */
+.note{
+  background:var(--bg-2);
+  border-left:3px solid var(--brand);
+  color:var(--text);
+  padding:16px;
+  border-radius:10px;
+}
+
+/* Plotly 颜色网格微调（跟主题网格一致） */
+.js-plotly-plot .gridlayer .xgrid,
+.js-plotly-plot .gridlayer .ygrid{ stroke:var(--grid) }

@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CO₂ Visualisation – Malaysia in ASEAN Context</title>
+
+<!-- Plotly (做折线/条形/热力图) -->
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<!-- Papa Parse (读 CSV) -->
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-2: #f6f7f9;
+    --text: #262730;
+    --muted: #6b7280;
+    --grid: #e5e7eb;
+    --brand: #1f77b4;
+    --good: #2ca02c;
+    --warn: #d62728;
+    --card: #ffffff;
+    --card-border: #e5e7eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1117;
+      --bg-2: #1a1d21;
+      --text: #fafafa;
+      --muted: #a1a1aa;
+      --grid: #3a3f47;
+      --brand: #60a5fa;
+      --good: #86efac;
+      --warn: #f87171;
+      --card: #0f141a;
+      --card-border: #22262c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    max-width: 1200px; margin: 32px auto 8px; padding: 0 16px;
+  }
+  h1 { font-size: clamp(28px, 4vw, 44px); margin: 0 0 8px; }
+  .caption { color: var(--muted); margin-bottom: 20px; }
+
+  .container {
+    max-width: 1200px; margin: 0 auto; padding: 0 16px 40px;
+    display: grid; grid-template-columns: 280px 1fr; gap: 24px;
+  }
+  @media (max-width: 900px) {
+    .container { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 16px;
+  }
+  .panel h3 { margin: 0 0 12px; font-size: 16px; color: var(--muted); }
+
+  .radio { display: grid; gap: 8px; margin-bottom: 16px; }
+  .radio label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+
+  .slider-row { margin-top: 8px; }
+  .row { display:flex; justify-content: space-between; font-size: 12px; color:var(--muted); }
+
+  .chart {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 8px;
+  }
+
+  .note {
+    background: var(--bg-2);
+    border-left: 3px solid var(--brand);
+    padding: 16px; border-radius: 10px; margin-top: 18px; color: var(--text);
+  }
+
+  a { color: var(--brand); text-decoration: none; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>CO₂ Emissions per Capita – Malaysia in ASEAN Context</h1>
+    <div class="caption">Source: World Bank (EN.GHG.CO2.PC.CE.AR5) – Metric tons per capita</div>
+  </header>
+
+  <div class="container">
+    <!-- 左侧控制面板 -->
+    <aside class="panel">
+      <h3>Controls</h3>
+
+      <div class="radio" id="viewRadios">
+        <label><input type="radio" name="view" value="line" checked />
+          Line: Malaysia vs ASEAN vs World</label>
+        <label><input type="radio" name="view" value="bar" />
+          Bar: Latest Year (ASEAN + World)</label>
+        <label><input type="radio" name="view" value="heat" />
+          Heatmap: ASEAN &amp; World (1990–2023)</label>
+      </div>
+
+      <div class="slider-row">
+        <div class="row"><span>Year range</span><span id="yearText"></span></div>
+        <input type="range" id="yearMin" min="1990" max="2023" value="1990" />
+        <input type="range" id="yearMax" min="1990" max="2023" value="2023" />
+      </div>
+    </aside>
+
+    <!-- 右侧图表与说明 -->
+    <main>
+      <div id="chart" class="chart" style="height:520px;"></div>
+      <div id="note" class="note">
+        <strong>观察：</strong> 自 1990s 后期起，<b>Malaysia</b> 的人均排放长期高于 <b>World</b> 平均值，
+        且与 <b>ASEAN Average</b> 的差距在 2000s 扩大、近几年逐步收敛。
+      </div>
+    </main>
+  </div>
+
+<script>
+const ASEAN = ["Malaysia","Singapore","Thailand","Indonesia","Vietnam",
+               "Philippines","Cambodia","Lao PDR","Myanmar","Brunei Darussalam"];
+
+const state = {
+  data: [],
+  years: {min: 1990, max: 2023},
+  view: 'line'
+};
+
+const $ = sel => document.querySelector(sel);
+const yearText = $('#yearText');
+const rMin = $('#yearMin');
+const rMax = $('#yearMax');
+
+function clampYears() {
+  let a = parseInt(rMin.value,10), b = parseInt(rMax.value,10);
+  if (a > b) [a,b] = [b,a];
+  rMin.value = a; rMax.value = b;
+  yearText.textContent = `${a} – ${b}`;
+  return [a,b];
+}
+
+function computeAseanAverage(data) {
+  // data: [{Year, Country Name, CO2_per_capita}]
+  const map = new Map(); // year -> [values]
+  for (const row of data) {
+    if (!ASEAN.includes(row["Country Name"])) continue;
+    const y = row.Year;
+    if (!map.has(y)) map.set(y, []);
+    map.get(y).push(row.CO2_per_capita);
+  }
+  const out = [];
+  for (const [year, arr] of map.entries()) {
+    const mean = arr.reduce((s,v)=>s+v,0) / arr.length;
+    out.push({Year: year, "Country Name":"ASEAN Average", CO2_per_capita: mean});
+  }
+  return out.sort((a,b)=>a.Year-b.Year);
+}
+
+function filterByYears(data, a, b) {
+  return data.filter(d => d.Year >= a && d.Year <= b);
+}
+
+function toSeries(data, name) {
+  const arr = data.filter(d => d["Country Name"]===name).sort((a,b)=>a.Year-b.Year);
+  return {
+    x: arr.map(d=>d.Year),
+    y: arr.map(d=>d.CO2_per_capita),
+    type: 'scatter',
+    mode: 'lines+markers',
+    name,
+    line: { width: 3 },
+    marker: { size: 6 }
+  };
+}
+
+function drawLine(a,b) {
+  const df = filterByYears(state.data, a, b);
+  const aseanAvg = computeAseanAverage(state.data);
+  const world = filterByYears(state.data.filter(d=>d["Country Name"]==="World"), a, b);
+  const malaysia = filterByYears(state.data.filter(d=>d["Country Name"]==="Malaysia"), a, b);
+  const aseanF = filterByYears(aseanAvg, a, b);
+
+  const traces = [
+    toSeries(malaysia, "Malaysia"),
+    toSeries({filter:(fn)=>aseanF.filter(fn)} , "ASEAN Average"), // small adaptor
+    toSeries({filter:(fn)=>world.filter(fn)}, "World"),
+  ];
+  // 手动设置颜色，和 Streamlit 版一致
+  traces[0].line.color = '#d62728';
+  traces[1].line.color = '#2ca02c';
+  traces[2].line.color = '#1f77b4';
+
+  Plotly.newPlot('chart', traces, {
+    margin: {l:60,r:20,t:30,b:50},
+    yaxis: { title:'CO₂ (metric tons per capita)', rangemode:'tozero', gridcolor:'var(--grid)'},
+    xaxis: { title:'Year', gridcolor:'var(--grid)', tickmode:'linear' },
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    legend: {orientation:'h', y:1.12}
+  }, {responsive:true, displayModeBar:false});
+}
+
+function drawBar(a,b) {
+  // 取滑块上限内的最近年份
+  const latest = Math.min(
+    Math.max(...state.data.map(d=>d.Year)),
+    b
+  );
+  const rows = state.data.filter(d =>
+    d.Year === latest && (ASEAN.includes(d["Country Name"]) || d["Country Name"]==="World")
+  ).sort((x,y)=>y.CO2_per_capita - x.CO2_per_capita);
+
+  Plotly.newPlot('chart', [{
+    type:'bar',
+    x: rows.map(d=>d.CO2_per_capita),
+    y: rows.map(d=>d["Country Name"]),
+    orientation:'h',
+    marker: { colorscale:'YlOrRd', color: rows.map(d=>d.CO2_per_capita) },
+    hovertemplate: '%{y}: %{x:.2f}<extra></extra>'
+  }], {
+    margin:{l:120,r:20,t:30,b:50},
+    xaxis:{ title:'CO₂ (metric tons per capita)', gridcolor:'var(--grid)'},
+    yaxis:{ automargin:true },
+    paper_bgcolor:'rgba(0,0,0,0)',
+    plot_bgcolor:'rgba(0,0,0,0)'
+  }, {responsive:true, displayModeBar:false});
+}
+
+function drawHeat(a,b) {
+  const countries = [...ASEAN, "World"];
+  const years = [...new Set(state.data.map(d=>d.Year))].filter(y=>y>=a && y<=b).sort((x,y)=>x-y);
+
+  // pivot: rows=countries, cols=years
+  const matrix = countries.map(c => years.map(y => {
+    const row = state.data.find(d=>d["Country Name"]===c && d.Year===y);
+    return row ? row.CO2_per_capita : null;
+  }));
+
+  Plotly.newPlot('chart', [{
+    type:'heatmap',
+    z: matrix, x: years, y: countries,
+    colorscale:'YlOrRd', colorbar:{ title:'CO₂ per capita' }
+  }], {
+    margin:{l:130,r:20,t:30,b:50},
+    xaxis:{ title:'Year' }, yaxis:{ title:'Country', automargin:true },
+    paper_bgcolor:'rgba(0,0,0,0)',
+    plot_bgcolor:'rgba(0,0,0,0)'
+  }, {responsive:true, displayModeBar:false});
+}
+
+function render() {
+  const [a,b] = clampYears();
+  if (state.view==='line') drawLine(a,b);
+  else if (state.view==='bar') drawBar(a,b);
+  else drawHeat(a,b);
+}
+
+function wireEvents() {
+  document.getElementsByName('view').forEach(r => {
+    r.addEventListener('change', e => { state.view = e.target.value; render(); });
+  });
+  rMin.addEventListener('input', render);
+  rMax.addEventListener('input', render);
+}
+
+function parseData(rows) {
+  // 规范化：Year -> int, CO2_per_capita -> float
+  return rows.map(r => ({
+    Year: +r["Year"],
+    "Country Name": r["Country Name"],
+    CO2_per_capita: parseFloat(r["CO2_per_capita"])
+  })).filter(d => Number.isFinite(d.Year) && Number.isFinite(d.CO2_per_capita));
+}
+
+// ---- 入口：读取 CSV 并启动 ----
+Papa.parse('data/co2_clean_asean.csv', {
+  header: true,
+  download: true,
+  dynamicTyping: false,
+  complete: (res) => {
+    state.data = parseData(res.data);
+    // 自动设定滑块范围（若数据不是 1990–2023）
+    const years = state.data.map(d=>d.Year);
+    const minY = Math.min(...years), maxY = Math.max(...years);
+    rMin.min = rMax.min = minY; rMin.max = rMax.max = maxY;
+    rMin.value = minY; rMax.value = maxY;
+    clampYears();
+    wireEvents();
+    render();
+  },
+  error: (err) => {
+    document.getElementById('chart').innerHTML = '<p style="padding:16px;color:#ef4444">Failed to load CSV: '+err+'</p>';
+  }
+});
+</script>
+</body>
+</html>
