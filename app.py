@@ -289,42 +289,117 @@ if view.startswith("line"):
 
 
 elif view.startswith("bar"):
-    latest_year = min(max(df["Year"]), year_range[1])
+    # --- 交互开关 ---
+    show_diff = st.sidebar.toggle("Show difference vs World (Δ)", value=True)
+    show_rank = st.sidebar.toggle("Show rank numbers", value=True)
+
+    # --- 最近可用年份（受滑块上限约束） ---
+    latest_year = min(int(df["Year"].max()), int(year_range[1]))
+
+    # --- 抽取当年 ASEAN + World ---
     latest = df[
-        (df["Year"] == latest_year) & (df["Country Name"].isin(ASEAN + ["World"]))
-    ].sort_values("CO2_per_capita", ascending=False)
+        (df["Year"] == latest_year) &
+        (df["Country Name"].isin(ASEAN + ["World"]))
+    ].copy()
 
+    # 防御：如果该年缺 World，直接退回绝对值模式
+    if "World" not in latest["Country Name"].values:
+        show_diff = False
+
+    # --- 计算差值 Δ vs World 或保留绝对值 ---
+    if show_diff:
+        world_val = latest.loc[latest["Country Name"]=="World", "CO2_per_capita"].iloc[0]
+        latest["Delta_vs_World"] = latest["CO2_per_capita"] - world_val
+        plot_col = "Delta_vs_World"
+        x_label  = "Δ vs World (metric tons per capita)"
+        # 排序：Δ 从大到小
+        latest = latest.sort_values(plot_col, ascending=False)
+    else:
+        plot_col = "CO2_per_capita"
+        x_label  = "CO$_2$ (metric tons per capita)"
+        latest = latest.sort_values(plot_col, ascending=False)
+
+    # --- 生成排名（用于可选展示）---
+    latest["Rank"] = range(1, len(latest) + 1)
+
+    # --- 调色：Malaysia 高亮，其它柔和灰蓝；差值模式下负值用灰 ---
+    base_gray  = "#8B8FA7"
+    dark_gray  = "#2B2F36"
+    pos_color  = PRIMARY     # 正向/高值
+    neg_color  = "#6b7280"   # 负向/低值（差值模式）
+
+    colors = []
+    for _, row in latest.iterrows():
+        name = row["Country Name"]
+        if name == "Malaysia":
+            colors.append(pos_color)
+        else:
+            if show_diff:
+                colors.append(pos_color if row[plot_col] > 0 else neg_color)
+            else:
+                colors.append(base_gray)
+
+    # --- 画图 ---
     fig, ax = plt.subplots(figsize=(8.8, 5))
-
-    # —— 渐变调色（方案1）：主色 → 中性灰蓝 → 深灰 —— #
-    cmap = LinearSegmentedColormap.from_list(
-        "rank_grad",
-        [PRIMARY, "#8B8FA7", "#2B2F36"],
-        N=len(latest)
-    )
-    denom = max(1, len(latest) - 1)
-    bar_palette = [cmap(i/denom) for i in range(len(latest))]
-
     sns.barplot(
         data=latest,
-        x="CO2_per_capita",
+        x=plot_col,
         y="Country Name",
-        palette=bar_palette,
+        palette=colors,
         ax=ax
     )
 
-    ax.set_xlabel("CO$_2$ (metric tons per capita)"); ax.set_ylabel("Country")
-    ax.set_title(f"Latest Year Comparison – {latest_year}")
-    for i, v in enumerate(latest["CO2_per_capita"]):
-        ax.text(v + 0.1, i, f"{v:.1f}", va="center", color=TXT)
+    # 差值模式：在 0 处画参考线
+    if show_diff:
+        ax.axvline(0, color=GRID, linewidth=1.2)
+
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Country")
+    title_mode = "Difference from World Average" if show_diff else "Absolute level"
+    ax.set_title(f"ASEAN + World – {title_mode} • {latest_year}")
+
+    # 数值标签
+    for i, v in enumerate(latest[plot_col]):
+        ax.text(v + (0.12 if v >= 0 else -0.12), i,
+                f"{v:.1f}",
+                va="center",
+                ha="left" if v >= 0 else "right",
+                color=TXT)
+
+    # 排名标注（可选）：在每条最左侧画 #rank
+    if show_rank:
+        ymin, ymax = ax.get_ylim()
+        for i, r in enumerate(latest["Rank"]):
+            ax.text(ax.get_xlim()[0], i, f"#{r}",
+                    va="center", ha="left",
+                    color=TXT, alpha=0.85)
+
     apply_theme(ax)
     plt.tight_layout(pad=1.5)
     st.pyplot(fig)
 
-    st.markdown(
-        f"> **Observation:** In **{latest_year}**, **Malaysia** was located upstream in **ASEAN**; **Brunei/SG** was significantly higher,"
-        " and**Cambodia/Myanmar** was lower; **World** was used as the baseline reference."
-    )
+    # --- Observation：针对 Malaysia 动态文案 ---
+    # 取 Malaysia、World 的数值（若缺少则跳过）
+    mal_val = latest.loc[latest["Country Name"]=="Malaysia", plot_col].iloc[0] \
+              if "Malaysia" in latest["Country Name"].values else None
+
+    if show_diff and mal_val is not None:
+        # 差值模式：直接解释 Malaysia 高/低于世界多少
+        higher_lower = "higher than" if mal_val >= 0 else "lower than"
+        st.markdown(
+            f"> **Observation:** In **{latest_year}**, Malaysia is **{abs(mal_val):.1f}** t higher/lower than the **World** average "
+            f"({higher_lower}). Countries are ranked by Δ vs World to emphasize relative gaps."
+            .replace("higher/lower", "higher" if mal_val >= 0 else "lower")
+        )
+    else:
+        # 绝对值模式：解释 Malaysia 的排名
+        if "Malaysia" in latest["Country Name"].values:
+            mal_rank = int(latest.loc[latest["Country Name"]=="Malaysia", "Rank"].iloc[0])
+            top = latest.iloc[0]
+            st.markdown(
+                f"> **Observation:** In **{latest_year}**, **Malaysia** ranks **#{mal_rank}** by per-capita CO$_2$. "
+                f"**{top['Country Name']}** is highest in the region for this year."
+            )
 
 else:
     # --- 数据与透视 ---
