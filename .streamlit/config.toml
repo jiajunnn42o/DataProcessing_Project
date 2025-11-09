@@ -1,0 +1,7 @@
+[theme]
+base = "dark"            # 先固定 dark，便于观察
+primaryColor = "#ff41ec" # 你的粉紫
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#1A1D21"
+textColor = "#FAFAFA"
+font = "sans serif"
