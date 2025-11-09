@@ -157,11 +157,12 @@ year_range = st.sidebar.slider(
     value=(year_min, year_max), step=1
 )
 
+
 # ----------------------------
 # 标题
 # ----------------------------
-st.title("CO₂ Emissions per Capita – Malaysia in ASEAN Context")
-st.caption("Source: World Bank (EN.GHG.CO2.PC.CE.AR5) – Metric tons per capita")
+st.title("CO₂ Emissions per Capita : Malaysia in ASEAN Context")
+st.caption("Source: World Bank (EN.GHG.CO2.PC.CE.AR5) - Metric tons per capita")
 
 # ----------------------------
 # 视图
@@ -172,7 +173,11 @@ if view.startswith("line"):
         & (combined["Year"].between(*year_range))
     ]
 
-    palette = {'Malaysia':'#d62728', 'ASEAN Average':'#2ca02c', 'World':'#1f77b4'}
+    palette = {
+    "Malaysia": PRIMARY,          # 主色 (粉紫)
+    "ASEAN Average": "#9b8aff",   # 淡紫蓝
+    "World": "#6fc3ff"            # 柔和蓝
+}
     fig, ax = plt.subplots(figsize=(9.5, 5.2))
     sns.lineplot(
         data=plot_df, x="Year", y="CO2_per_capita",
@@ -292,8 +297,8 @@ else:
     st.pyplot(fig)
 
     st.markdown(
-        "> 观察：热力图按最近年份排序并做对比度裁切，突出各国相对水平；"
-        "Malaysia 在 2000s 出现显著上升，近年趋稳。"
+        "> **Observation:** The heat map is sorted by the most recent year and cropped for contrast to highlight the relative levels of each country;"
+        " Malaysia saw a significant increase in the 2000s and has stabilized in recent years."
     )
 
 
