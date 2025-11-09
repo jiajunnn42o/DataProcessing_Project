@@ -77,6 +77,25 @@ def apply_theme(ax):
         for t in leg.get_texts():
             t.set_color(TXT)
 
+def color_map_for(selected, primary="#ff41ec"):
+    """给多选系列分配颜色：Malaysia 用主色，World 和 ASEAN Average 用固定清爽配色，其它轮询柔和色。"""
+    nice_cycle = [
+        "#8bd6a8", "#f9a8d4", "#fcd34d", "#a7f3d0", "#93c5fd",
+        "#fca5a5", "#c4b5fd", "#86efac", "#fde68a", "#7dd3fc"
+    ]
+    m = {}
+    for name in selected:
+        if name == "Malaysia":
+            m[name] = primary
+        elif name == "ASEAN Average":
+            m[name] = "#9b8aff"   # 淡紫蓝（与你现在风格一致）
+        elif name == "World":
+            m[name] = "#6fc3ff"   # 柔和蓝
+        else:
+            m[name] = nice_cycle[0] if nice_cycle else "#bbbbbb"
+            if nice_cycle: nice_cycle.pop(0)
+    return m
+
 # ----------------------------
 # 数据
 # ----------------------------
@@ -99,6 +118,16 @@ asean_mean = (
 asean_mean["Country Name"] = "ASEAN Average"
 combined = pd.concat([df, asean_mean], ignore_index=True)
 
+# --- 候选国家列表（含 ASEAN Average 与 World） ---
+COUNTRIES = (
+    sorted(df["Country Name"].unique().tolist())
+    + (["ASEAN Average"] if "ASEAN Average" not in df["Country Name"].unique() else [])
+)
+# 默认选择：Malaysia + ASEAN Average + World（存在就选）
+DEFAULT_LINE_SET = [x for x in ["Malaysia", "ASEAN Average", "World"] if x in COUNTRIES]
+if not DEFAULT_LINE_SET:  # 兜底至少一个
+    DEFAULT_LINE_SET = COUNTRIES[:1]
+
 # ----------------------------
 # 控件
 # ----------------------------
@@ -119,6 +148,20 @@ view = st.sidebar.radio(
     options=["line", "bar", "heat"],
     format_func=lambda k: labels[k]
 )
+
+# 仅当 Line 视图时出现“多选国家”
+if view == "line":
+    st.sidebar.markdown("### Countries")
+    selected_countries = st.sidebar.multiselect(
+        "Select up to 6 series", 
+        options=COUNTRIES,
+        default=DEFAULT_LINE_SET,
+        max_selections=6,
+        help="Pick countries/aggregates to compare (Malaysia/ASEAN Average/World included).",
+    )
+else:
+    selected_countries = DEFAULT_LINE_SET  # 其他视图不使用
+
 
 # 纯静态粉紫框样式（不变色、不hover）
 st.markdown(f"""
@@ -168,32 +211,82 @@ st.caption("Source: World Bank (EN.GHG.CO2.PC.CE.AR5) - Metric tons per capita")
 # 视图
 # ----------------------------
 if view.startswith("line"):
-    plot_df = combined[
-        combined["Country Name"].isin(["Malaysia", "ASEAN Average", "World"])
-        & (combined["Year"].between(*year_range))
-    ]
+    # 1) 校验选择
+    if not selected_countries:
+        st.info("Please select at least one country/aggregate in the sidebar.")
+        st.stop()
 
-    palette = {
-    "Malaysia": PRIMARY,          # 主色 (粉紫)
-    "ASEAN Average": "#9b8aff",   # 淡紫蓝
-    "World": "#6fc3ff"            # 柔和蓝
-}
+    # 2) 过滤数据（从 combined 里取，包含 ASEAN Average）
+    plot_df = combined[
+        combined["Country Name"].isin(selected_countries)
+        & (combined["Year"].between(*year_range))
+    ].copy()
+
+    # 3) 颜色：Malaysia 用主色，其它自动分配
+    PRIMARY = st.get_option("theme.primaryColor") or "#ff41ec"
+    palette = color_map_for(selected_countries, primary=PRIMARY)
+
+    # 4) 画图
     fig, ax = plt.subplots(figsize=(9.5, 5.2))
     sns.lineplot(
         data=plot_df, x="Year", y="CO2_per_capita",
-        hue="Country Name", palette=palette, marker="o", linewidth=2.5, ax=ax
+        hue="Country Name", palette=palette,
+        marker="o", linewidth=2.5, ax=ax
     )
-    ax.set_ylim(0, 9)
     ax.set_xlabel("Year"); ax.set_ylabel("CO$_2$ (metric tons per capita)")
-    ax.set_title("Malaysia vs ASEAN Average vs World")
+    # —— 动态 y 轴范围：按数据自动缩放并留 10% 边距 —— #
+    ymin = float(plot_df["CO2_per_capita"].min())
+    ymax = float(plot_df["CO2_per_capita"].max())
+    pad  = max(0.2, (ymax - ymin) * 0.10)  # 至少留 0.2 的视觉缓冲
+    ax.set_ylim(bottom=max(0.0, ymin - pad), top=ymax + pad)
+
+    # —— 动态标题：把选中的系列名拼成 “A vs B vs C …” —— #
+    def short_title(names, limit=4):
+        # 保持 Malaysia 在最前，其次 World/ASEAN Average，再到其它
+        order_key = {"Malaysia": 0, "World": 1, "ASEAN Average": 2}
+        names_sorted = sorted(set(names), key=lambda x: order_key.get(x, 99))
+        if len(names_sorted) <= limit:
+            return " vs ".join(names_sorted)
+        return " vs ".join(names_sorted[:limit]) + " …"
+    ax.set_title(short_title(selected_countries))
+
     apply_theme(ax)
     plt.tight_layout(pad=1.5)
     st.pyplot(fig)
 
-    st.markdown(
-        f"> **Observation:** Since the late 1990s, Malaysia's per capita emissions have been consistently higher than the **world** average,"
-        "and the gap with the **ASEAN** average widened in the 2000s but has gradually narrowed in recent years."
-    )
+    # 5) 简短解读（可按需保留/修改）
+    # --- 自动生成针对 Malaysia 的观察结论 ---
+    if "Malaysia" in selected_countries:
+        malaysia_mean = plot_df.loc[plot_df["Country Name"] == "Malaysia", "CO2_per_capita"].mean()
+        others = plot_df.loc[plot_df["Country Name"] != "Malaysia", "CO2_per_capita"]
+        other_mean = others.mean() if not others.empty else malaysia_mean
+        ratio = malaysia_mean / other_mean if other_mean else 1
+
+        if ratio > 1.2:
+            obs_text = (
+                f"> **Observation:** Malaysia's per-capita CO₂ emissions remain **substantially higher** "
+                f"than the average of the selected countries across {year_range[0]}–{year_range[1]}. "
+                f"This indicates Malaysia's comparatively larger industrial and energy intensity."
+            )
+        elif ratio < 0.8:
+            obs_text = (
+                f"> **Observation:** Malaysia's per-capita CO₂ emissions are **consistently lower** "
+                f"than most selected countries, suggesting a relatively smaller carbon footprint per person."
+            )
+        else:
+            obs_text = (
+                f"> **Observation:** Malaysia's per-capita CO₂ emissions are **comparable** "
+                f"to the overall regional level, with fluctuations closely following ASEAN and world trends."
+            )
+    else:
+        obs_text = (
+            "> **Observation:** CO₂ emission trends vary notably among the selected countries; "
+            "select Malaysia to view its relative position and long-term changes."
+        )
+
+    st.markdown(obs_text)
+
+
 
 elif view.startswith("bar"):
     latest_year = min(max(df["Year"]), year_range[1])
