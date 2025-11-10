@@ -184,6 +184,7 @@ if "df_raw" not in st.session_state:    st.session_state.df_raw = None
 if "df_clean" not in st.session_state:  st.session_state.df_clean = None
 if "pipeline" not in st.session_state:  st.session_state.pipeline = []
 if "generic_view" not in st.session_state: st.session_state.generic_view = None
+if "last_upload_name" not in st.session_state: st.session_state.last_upload_name = None  # NEW
 
 # ----------------------------
 # 默认数据（你的 CO₂ CSV）
@@ -330,18 +331,21 @@ with tab_upload:
             st.session_state.df_raw = load_default()
             st.session_state.df_clean = None
             st.session_state.pipeline = [{"step":"load_default", "args": {}}]
+            st.session_state.last_upload_name = "__DEFAULT__"  # NEW
             st.success("Loaded built-in dataset.")
-    if up is not None:
+    # Only process when a NEW file is chosen
+    if up is not None and st.session_state.last_upload_name != up.name:  # NEW
         try:
             df_raw = smart_read(up)
             st.session_state.df_raw = df_raw
             st.session_state.df_clean = None
             st.session_state.pipeline = [{"step":"upload", "args":{"filename": up.name}}]
+            st.session_state.last_upload_name = up.name  # NEW
             st.success(f"Uploaded: {up.name}  (rows={len(df_raw)}, cols={len(df_raw.columns)})")
         except Exception as e:
             st.error(f"Failed to read file: {e}")
 
-    df_show = st.session_state.df_clean or st.session_state.df_raw
+    df_show = st.session_state.df_clean if st.session_state.df_clean is not None else st.session_state.df_raw
     if df_show is not None:
         st.markdown("**Preview (head)**")
         st.dataframe(df_show.head(10), use_container_width=True)
