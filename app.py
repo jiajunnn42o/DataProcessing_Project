@@ -8,6 +8,9 @@ import matplotlib as mpl
 from matplotlib.colors import LinearSegmentedColormap
 from io import StringIO
 import re
+import plotly.express as px
+from streamlit_folium import st_folium
+import folium
 
 # ----------------------------
 # 页面设置
@@ -681,113 +684,189 @@ with tab_viz:
     else:
         df_base = load_default()
 
-    # ====== Generic Visualise (default) ======
-    st.markdown("### Generic Visualise (auto-adapts to your schema)")
-
-    plot_df = st.session_state.get("generic_view", None)
-    use_generic = st.toggle(
-        "Use Column Mapper view if available",
-        value=True if plot_df is not None else False
-    )
-    if not (use_generic and plot_df is not None):
-        plot_df = df_base.copy()
+    # Choose data source for plotting (Column Mapper if provided)
+    gv = st.session_state.get("generic_view", None)
+    use_generic = st.toggle("Use Column Mapper view if available", value=True if gv is not None else False)
+    plot_df = gv if (use_generic and gv is not None) else df_base.copy()
 
     # Detect column types
     num_cols = plot_df.select_dtypes(include="number").columns.tolist()
     dt_cols  = [c for c in plot_df.columns if np.issubdtype(plot_df[c].dtype, np.datetime64)]
     cat_cols = [c for c in plot_df.columns if c not in num_cols + dt_cols]
 
-    st.write("**Preview of current plotting data:**")
-    st.dataframe(plot_df.head(5), use_container_width=True)
+    # ---- INTERACTIVE MODE ----
+    st.markdown("### Interactive mode (Plotly / Leaflet)")
+    inter_mode = st.radio("Pick interactive engine", ["Auto", "Plotly", "Leaflet (map)"], horizontal=True)
 
-    # Choose a chart type dynamically
-    chart = st.selectbox(
-        "Chart Type",
-        ["Histogram", "Bar (agg)", "Line (time)", "Scatter", "Correlation Heatmap"]
-    )
+    # Helper: detect geo possibilities
+    def _has_latlon(cols):
+        lc = [str(c).lower() for c in cols]
+        return ("lat" in lc or "latitude" in lc) and ("lon" in lc or "long" in lc or "lng" in lc or "longitude" in lc)
 
-    if chart == "Histogram":
-        if not num_cols:
-            st.warning("No numeric columns detected.")
+    def _country_col(cols):
+        # try to find a column that likely contains country names/codes
+        for c in cols:
+            lc = str(c).lower()
+            if any(k in lc for k in ["country", "nation", "location", "iso", "region"]):
+                return c
+        return None
+
+    # We’ll show a recommended chart type
+    recommended = None
+    if _has_latlon(plot_df.columns):
+        recommended = "map_latlon"
+    elif _country_col(plot_df.columns):
+        # country choropleth if there is also at least one numeric column
+        recommended = "map_country" if num_cols else None
+    elif dt_cols and num_cols:
+        recommended = "line"
+    elif len(num_cols) >= 2:
+        recommended = "scatter"
+    elif num_cols:
+        recommended = "hist"
+    elif cat_cols and num_cols:
+        recommended = "bar"
+
+    # --- AUTO or Plotly path ---
+    if inter_mode in ["Auto", "Plotly"]:
+        # If AUTO selected and we detect geographic data, we’ll defer to map unless user forced Plotly
+        if inter_mode == "Auto" and recommended in ["map_latlon", "map_country"]:
+            inter_mode = "Leaflet (map)"
+
+    if inter_mode in ["Auto", "Plotly"]:
+        st.write("**Preview of current plotting data:**")
+        st.dataframe(plot_df.head(5), use_container_width=True)
+
+        # Let user pick chart type but start with recommendation
+        chart_options = ["Line (time)", "Bar (agg)", "Scatter", "Histogram", "Correlation Heatmap"]
+        # default index based on recommendation
+        default_idx = 0
+        if recommended == "line":
+            default_idx = 0
+        elif recommended == "bar":
+            default_idx = 1
+        elif recommended == "scatter":
+            default_idx = 2
+        elif recommended == "hist":
+            default_idx = 3
         else:
-            col  = st.selectbox("Numeric column", num_cols)
-            bins = st.slider("Bins", 5, 80, 30)
-            fig, ax = new_fig()
-            edge = "white" if IS_DARK else "#2b2b2b"
-            ax.hist(plot_df[col].dropna(), bins=bins, color=PRIMARY, edgecolor=edge, linewidth=0.8, alpha=0.95)
-            ax.set_title(f"Histogram — {col}")
-            ax.set_xlabel(col); ax.set_ylabel("Count")
-            apply_theme(ax); st.pyplot(fig)
+            default_idx = 0
 
-    elif chart == "Bar (agg)":
-        if not num_cols or not (cat_cols or dt_cols):
-            st.warning("A grouping column (category or time) and a numeric column are required.")
-        else:
-            x   = st.selectbox("Grouping Column (X)", cat_cols + dt_cols)
-            y   = st.selectbox("Numeric Column (Y)", num_cols)
-            agg = st.selectbox("Aggregation Method", ["mean","sum","median"])
-            data = getattr(plot_df.groupby(x)[y], agg)().reset_index()
+        chart = st.selectbox("Chart Type (interactive)", chart_options, index=default_idx)
 
-            fig, ax = new_fig()
-            if x in dt_cols:
-                data = data.sort_values(x)
-                sns.lineplot(data=data, x=x, y=y, marker="o", ax=ax, color=PRIMARY)
-                ax.set_title(f"{agg.title()} of {y} over {x}")
+        if chart == "Line (time)":
+            if not dt_cols or not num_cols:
+                st.warning("A datetime column and a numeric column are required.")
             else:
-                sns.barplot(data=data, x=y, y=x, ax=ax, palette=brand_palette(5))
-                ax.set_title(f"{agg.title()} of {y} by {x}")
-            apply_theme(ax); st.pyplot(fig)
+                t = st.selectbox("Time Column", dt_cols)
+                y = st.selectbox("Numeric Column (Y)", num_cols)
+                color = st.selectbox("Grouping/Color (optional)", ["(none)"] + cat_cols)
+                hover = st.multiselect("Extra hover fields", [c for c in plot_df.columns if c not in [t, y]])
+                fig = px.line(plot_df.sort_values(t), x=t, y=y,
+                              color=None if color=="(none)" else color,
+                              markers=True,
+                              hover_data=hover,
+                              title=f"{y} over {t}")
+                st.plotly_chart(fig, use_container_width=True)
 
-    elif chart == "Line (time)":
-        if not dt_cols or not num_cols:
-            st.warning("A datetime column and a numeric column are required.")
-        else:
-            t = st.selectbox("Time Column", dt_cols)
-            y = st.selectbox("Numeric Column (Y)", num_cols)
-            g = st.selectbox("Grouping (Optional)", ["(none)"] + cat_cols)
-            data = plot_df.dropna(subset=[t, y]).sort_values(t)
-
-            fig, ax = new_fig()
-            if g != "(none)":
-                sns.lineplot(data=data, x=t, y=y, hue=g, marker="o", ax=ax, palette=brand_palette(6))
+        elif chart == "Bar (agg)":
+            if not num_cols or not (cat_cols or dt_cols):
+                st.warning("A grouping column (category or time) and a numeric column are required.")
             else:
-                sns.lineplot(data=data, x=t, y=y, marker="o", ax=ax, color=PRIMARY)
-            ax.set_title(f"{y} over {t}")
-            apply_theme(ax); st.pyplot(fig)
+                x = st.selectbox("Grouping Column (X)", cat_cols + dt_cols)
+                y = st.selectbox("Numeric Column (Y)", num_cols)
+                agg = st.selectbox("Aggregation", ["mean","sum","median"])
+                df_agg = getattr(plot_df.groupby(x)[y], agg)().reset_index()
+                # time grouping gets a line; category gets a bar
+                if x in dt_cols:
+                    fig = px.line(df_agg.sort_values(x), x=x, y=y, markers=True,
+                                  title=f"{agg.title()} of {y} over {x}")
+                else:
+                    fig = px.bar(df_agg, x=y, y=x, orientation="h",
+                                 title=f"{agg.title()} of {y} by {x}")
+                st.plotly_chart(fig, use_container_width=True)
 
-    elif chart == "Scatter":
-        if len(num_cols) < 2:
-            st.warning("At least two numeric columns are required.")
-        else:
-            x = st.selectbox("X (Numeric)", num_cols, key="sc_x")
-            y = st.selectbox("Y (Numeric)", num_cols, key="sc_y")
-            g = st.selectbox("Color Grouping (Optional)", ["(none)"] + cat_cols, key="sc_g")
-
-            fig, ax = new_fig()
-            if g != "(none)":
-                sns.scatterplot(data=plot_df, x=x, y=y, hue=g, ax=ax, palette=brand_palette(6))
+        elif chart == "Scatter":
+            if len(num_cols) < 2:
+                st.warning("At least two numeric columns are required.")
             else:
-                sns.scatterplot(data=plot_df, x=x, y=y, ax=ax, color=PRIMARY)
-            ax.set_title(f"{y} vs {x}")
-            apply_theme(ax); st.pyplot(fig)
+                x = st.selectbox("X (numeric)", num_cols, key="px_sc_x")
+                y = st.selectbox("Y (numeric)", num_cols, key="px_sc_y")
+                color = st.selectbox("Color (optional)", ["(none)"] + cat_cols, key="px_sc_c")
+                size  = st.selectbox("Bubble size (optional)", ["(none)"] + num_cols, key="px_sc_s")
+                hover = st.multiselect("Extra hover fields", [c for c in plot_df.columns if c not in [x, y]])
+                fig = px.scatter(plot_df, x=x, y=y,
+                                 color=None if color=="(none)" else color,
+                                 size=None if size=="(none)" else size,
+                                 hover_data=hover,
+                                 trendline=None,
+                                 title=f"{y} vs {x}")
+                st.plotly_chart(fig, use_container_width=True)
 
-    else:  # Correlation Heatmap
-        nums = plot_df.select_dtypes(include="number")
-        if nums.shape[1] < 2:
-            st.warning("A correlation heatmap requires at least two numeric columns.")
+        elif chart == "Histogram":
+            if not num_cols:
+                st.warning("No numeric columns detected.")
+            else:
+                col = st.selectbox("Numeric column", num_cols)
+                bins = st.slider("Bins", 5, 80, 30)
+                fig = px.histogram(plot_df, x=col, nbins=bins, title=f"Histogram — {col}")
+                st.plotly_chart(fig, use_container_width=True)
+
+        else:  # Correlation Heatmap
+            nums = plot_df.select_dtypes(include="number")
+            if nums.shape[1] < 2:
+                st.warning("A correlation heatmap requires at least two numeric columns.")
+            else:
+                corr = nums.corr(numeric_only=True)
+                # Plotly heatmap
+                fig = px.imshow(corr, text_auto=True, aspect="auto", title="Correlation Heatmap",
+                                color_continuous_scale="RdPu")
+                st.plotly_chart(fig, use_container_width=True)
+
+    # --- LEAFLET MAP path (auto or forced) ---
+    if inter_mode == "Leaflet (map)":
+        st.write("**Map preview (Leaflet via folium):**")
+        cols = list(plot_df.columns)
+        lat_candidates = [c for c in cols if str(c).lower() in ["lat","latitude"]]
+        lon_candidates = [c for c in cols if str(c).lower() in ["lon","long","lng","longitude"]]
+        country_col = _country_col(cols)
+
+        if lat_candidates and lon_candidates:
+            lat_col = st.selectbox("Latitude column", lat_candidates)
+            lon_col = st.selectbox("Longitude column", lon_candidates)
+            popup_col = st.selectbox("Popup/label column (optional)", ["(none)"] + [c for c in cols if c not in [lat_col, lon_col]])
+            # center
+            center_lat = plot_df[lat_col].dropna().astype(float).mean() if not plot_df[lat_col].dropna().empty else 3.1390
+            center_lon = plot_df[lon_col].dropna().astype(float).mean() if not plot_df[lon_col].dropna().empty else 101.6869
+            m = folium.Map(location=[center_lat, center_lon], tiles="OpenStreetMap", zoom_start=4)
+            # add markers
+            for _, row in plot_df.dropna(subset=[lat_col, lon_col]).iterrows():
+                popup_text = None if popup_col=="(none)" else str(row[popup_col])
+                folium.CircleMarker(
+                    location=[float(row[lat_col]), float(row[lon_col])],
+                    radius=4, weight=1, fill=True, popup=popup_text
+                ).add_to(m)
+            st_folium(m, use_container_width=True, returned_objects=[])
+
+        elif country_col and num_cols:
+            # Choropleth by country names (Plotly is simpler for choropleth with country names)
+            target_metric = st.selectbox("Metric (numeric)", num_cols)
+            fig = px.choropleth(
+                plot_df.dropna(subset=[country_col]),
+                locations=country_col, locationmode="country names",
+                color=target_metric, hover_name=country_col,
+                title=f"{target_metric} by Country"
+            )
+            fig.update_geos(fitbounds="locations", visible=False)
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            corr = nums.corr(numeric_only=True)
-            fig, ax = new_fig(7.5, 4.6)
-            cmap_corr = LinearSegmentedColormap.from_list("corr_pink", ["#fff1fa", "#9b8aff", PRIMARY], N=256)
-            sns.heatmap(corr, annot=True, fmt=".2f", cmap=cmap_corr, ax=ax, cbar_kws={"label":"Correlation"})
-            ax.set_title("Correlation Heatmap")
-            apply_theme(ax); st.pyplot(fig)
+            st.info("No lat/lon or country columns detected—switch to Plotly charts or map your columns with the Column Mapper.")
 
-    # ====== Optional: CO₂/ASEAN special charts (only if applicable) ======
+    # ====== Optional: keep your original CO₂/ASEAN charts if the schema matches ======
     required_cols = {"Year", "Country Name", "CO2_per_capita"}
     has_co2_view = required_cols.issubset(df_base.columns)
     if has_co2_view:
-        with st.expander("Special CO₂/ASEAN charts (auto-enabled if columns exist)"):
+        with st.expander("Legacy CO₂/ASEAN charts (from your original code)"):
             ymin, ymax = int(df_base["Year"].min()), int(df_base["Year"].max())
             year_range = st.slider("Year range", min_value=ymin, max_value=ymax, value=(max(1990, ymin), ymax), step=1)
 
@@ -797,15 +876,10 @@ with tab_viz:
                 "heat": "Heatmap: ASEAN & World",
             }
             view = st.radio("Chart", options=["line","bar","heat"], format_func=lambda k: labels[k], horizontal=True)
-
             combined = compute_combined(df_base)
-
-            if view == "line":
-                line_chart(combined, year_range)
-            elif view == "bar":
-                bar_chart(df_base, year_range)
-            else:
-                heatmap_chart(df_base, year_range)
+            if view == "line":   line_chart(combined, year_range)
+            elif view == "bar":  bar_chart(df_base, year_range)
+            else:                heatmap_chart(df_base, year_range)
 
 # ----------------------------
 # 4) Report（自动方法摘要）
