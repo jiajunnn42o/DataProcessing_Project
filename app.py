@@ -1,4 +1,4 @@
-# app.py
+# app.py — dataset-agnostic visualisation; all your functions kept intact
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -13,7 +13,7 @@ import re
 # 页面设置
 # ----------------------------
 st.set_page_config(
-    page_title="CO₂ Visualisation System",
+    page_title="Dataset Explorer",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -190,7 +190,7 @@ if "generic_view" not in st.session_state: st.session_state.generic_view = None
 if "last_upload_name" not in st.session_state: st.session_state.last_upload_name = None
 
 # ----------------------------
-# 默认数据（你的 CO₂ CSV）
+# 默认数据（你的 CO₂ CSV） — 保留，但仅在无数据时使用
 # ----------------------------
 DEFAULT_PATH = "data/co2_clean_asean.csv"
 def load_default():
@@ -201,7 +201,7 @@ def load_default():
     return df
 
 # ----------------------------
-# CO₂ 专用可视化工具
+# CO₂ 专用可视化工具（原样保留）
 # ----------------------------
 ASEAN = [
     "Malaysia","Singapore","Thailand","Indonesia","Vietnam",
@@ -305,10 +305,11 @@ def heatmap_chart(df_base, year_range):
     st.pyplot(fig)
 
 # ----------------------------
-# 顶部标题
+# 顶部标题（动态：根据上传文件名）
 # ----------------------------
-st.title("CO₂ Emissions per Capita – Malaysia in ASEAN Context")
-st.caption("Source: World Bank (EN.GHG.CO2.PC.CE.AR5) – Metric tons per capita")
+page_name = st.session_state.last_upload_name or "Dataset Explorer"
+st.title(f"{page_name}")
+st.caption("Upload any CSV/Excel. The app adapts to your schema. Cleaning → Visualise → Report.")
 
 # ----------------------------
 # 页签
@@ -321,17 +322,17 @@ tab_upload, tab_clean, tab_viz, tab_report = st.tabs(
 # 1) Upload & Inspect
 # ----------------------------
 with tab_upload:
-    st.subheader("Upload a dataset (CSV/Excel) or use the default ASEAN dataset")
+    st.subheader("Upload a dataset (CSV/Excel) or use the sample")
     up = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx", "xls"])
 
     colA, colB = st.columns([1,1])
     with colA:
-        if st.button("Use default ASEAN dataset"):
+        if st.button("Use sample dataset (CO₂)"):
             st.session_state.df_raw = load_default()
             st.session_state.df_clean = None
             st.session_state.pipeline = [{"step":"load_default", "args": {}}]
-            st.session_state.last_upload_name = "__DEFAULT__"
-            st.success("Loaded built-in dataset.")
+            st.session_state.last_upload_name = "__SAMPLE__ co2_clean_asean.csv"
+            st.success("Loaded sample dataset.")
     if up is not None and st.session_state.last_upload_name != up.name:
         try:
             df_raw = smart_read(up)
@@ -355,7 +356,6 @@ with tab_upload:
         st.markdown("### Duplicate Analysis")
         dup_total = int(df_show.duplicated().sum())
 
-        # Info card
         st.markdown(
             f"""
             <div style="
@@ -377,7 +377,6 @@ with tab_upload:
         )
 
         with st.expander("Find & filter duplicates by columns"):
-            # columns that actually have any duplicates (optional hint)
             cols_with_dups = [
                 c for c in df_show.columns
                 if pd.Series(df_show[c]).duplicated(keep=False).any()
@@ -402,7 +401,6 @@ with tab_upload:
                 st.info(f"Rows flagged as duplicates: **{int(dup_mask.sum()):,}**")
                 st.dataframe(df_show[dup_mask].head(200), use_container_width=True)
 
-                # Group report in strict descending order
                 if subset_arg:
                     cols = subset_arg if isinstance(subset_arg, list) else [subset_arg]
                     grp = (
@@ -425,11 +423,11 @@ with tab_upload:
                 )
         # ---------- END ENHANCED DUPLICATES SECTION ----------
 
-        # ====== Column Mapper（当没有 CO₂ 专用列时使用）======
+        # ====== Column Mapper（当没有特定列时使用）======
         required = {"Year", "Country Name", "CO2_per_capita"}
         if not required.issubset(df_show.columns):
             st.markdown("### Column Mapper（Universal Data Adaptation）")
-            st.info("The current data does not contain column names specific to CO₂. Map your own columns for generic viz.")
+            st.info("Map your own columns to enable generic visualisation with time/category/value semantics.")
 
             cols = df_show.columns.tolist()
 
@@ -475,10 +473,10 @@ with tab_upload:
                     mapped["Value"] = pd.to_numeric(mapped["Value"], errors="coerce")
 
                 st.session_state.generic_view = mapped
-                st.success("A universal mapping view has been generated. Use it in Visualise → Generic Visualise.")
+                st.success("A universal mapping view has been generated. Use it in the Visualise tab → Generic Visualise.")
 
 # ----------------------------
-# 2) Clean & Transform
+# 2) Clean & Transform (unchanged logic)
 # ----------------------------
 with tab_clean:
     st.subheader("Step-by-step cleaning with preview and pipeline log")
@@ -670,11 +668,12 @@ with tab_clean:
     st.json(st.session_state.pipeline)
 
 # ----------------------------
-# 3) Visualise
+# 3) Visualise (dataset-agnostic by default)
 # ----------------------------
 with tab_viz:
     st.subheader("Visualisations")
 
+    # Pick the active dataframe
     if st.session_state.df_clean is not None and not st.session_state.df_clean.empty:
         df_base = st.session_state.df_clean
     elif st.session_state.df_raw is not None and not st.session_state.df_raw.empty:
@@ -682,141 +681,131 @@ with tab_viz:
     else:
         df_base = load_default()
 
+    # ====== Generic Visualise (default) ======
+    st.markdown("### Generic Visualise (auto-adapts to your schema)")
+
+    plot_df = st.session_state.get("generic_view", None)
+    use_generic = st.toggle(
+        "Use Column Mapper view if available",
+        value=True if plot_df is not None else False
+    )
+    if not (use_generic and plot_df is not None):
+        plot_df = df_base.copy()
+
+    # Detect column types
+    num_cols = plot_df.select_dtypes(include="number").columns.tolist()
+    dt_cols  = [c for c in plot_df.columns if np.issubdtype(plot_df[c].dtype, np.datetime64)]
+    cat_cols = [c for c in plot_df.columns if c not in num_cols + dt_cols]
+
+    st.write("**Preview of current plotting data:**")
+    st.dataframe(plot_df.head(5), use_container_width=True)
+
+    # Choose a chart type dynamically
+    chart = st.selectbox(
+        "Chart Type",
+        ["Histogram", "Bar (agg)", "Line (time)", "Scatter", "Correlation Heatmap"]
+    )
+
+    if chart == "Histogram":
+        if not num_cols:
+            st.warning("No numeric columns detected.")
+        else:
+            col  = st.selectbox("Numeric column", num_cols)
+            bins = st.slider("Bins", 5, 80, 30)
+            fig, ax = new_fig()
+            edge = "white" if IS_DARK else "#2b2b2b"
+            ax.hist(plot_df[col].dropna(), bins=bins, color=PRIMARY, edgecolor=edge, linewidth=0.8, alpha=0.95)
+            ax.set_title(f"Histogram — {col}")
+            ax.set_xlabel(col); ax.set_ylabel("Count")
+            apply_theme(ax); st.pyplot(fig)
+
+    elif chart == "Bar (agg)":
+        if not num_cols or not (cat_cols or dt_cols):
+            st.warning("A grouping column (category or time) and a numeric column are required.")
+        else:
+            x   = st.selectbox("Grouping Column (X)", cat_cols + dt_cols)
+            y   = st.selectbox("Numeric Column (Y)", num_cols)
+            agg = st.selectbox("Aggregation Method", ["mean","sum","median"])
+            data = getattr(plot_df.groupby(x)[y], agg)().reset_index()
+
+            fig, ax = new_fig()
+            if x in dt_cols:
+                data = data.sort_values(x)
+                sns.lineplot(data=data, x=x, y=y, marker="o", ax=ax, color=PRIMARY)
+                ax.set_title(f"{agg.title()} of {y} over {x}")
+            else:
+                sns.barplot(data=data, x=y, y=x, ax=ax, palette=brand_palette(5))
+                ax.set_title(f"{agg.title()} of {y} by {x}")
+            apply_theme(ax); st.pyplot(fig)
+
+    elif chart == "Line (time)":
+        if not dt_cols or not num_cols:
+            st.warning("A datetime column and a numeric column are required.")
+        else:
+            t = st.selectbox("Time Column", dt_cols)
+            y = st.selectbox("Numeric Column (Y)", num_cols)
+            g = st.selectbox("Grouping (Optional)", ["(none)"] + cat_cols)
+            data = plot_df.dropna(subset=[t, y]).sort_values(t)
+
+            fig, ax = new_fig()
+            if g != "(none)":
+                sns.lineplot(data=data, x=t, y=y, hue=g, marker="o", ax=ax, palette=brand_palette(6))
+            else:
+                sns.lineplot(data=data, x=t, y=y, marker="o", ax=ax, color=PRIMARY)
+            ax.set_title(f"{y} over {t}")
+            apply_theme(ax); st.pyplot(fig)
+
+    elif chart == "Scatter":
+        if len(num_cols) < 2:
+            st.warning("At least two numeric columns are required.")
+        else:
+            x = st.selectbox("X (Numeric)", num_cols, key="sc_x")
+            y = st.selectbox("Y (Numeric)", num_cols, key="sc_y")
+            g = st.selectbox("Color Grouping (Optional)", ["(none)"] + cat_cols, key="sc_g")
+
+            fig, ax = new_fig()
+            if g != "(none)":
+                sns.scatterplot(data=plot_df, x=x, y=y, hue=g, ax=ax, palette=brand_palette(6))
+            else:
+                sns.scatterplot(data=plot_df, x=x, y=y, ax=ax, color=PRIMARY)
+            ax.set_title(f"{y} vs {x}")
+            apply_theme(ax); st.pyplot(fig)
+
+    else:  # Correlation Heatmap
+        nums = plot_df.select_dtypes(include="number")
+        if nums.shape[1] < 2:
+            st.warning("A correlation heatmap requires at least two numeric columns.")
+        else:
+            corr = nums.corr(numeric_only=True)
+            fig, ax = new_fig(7.5, 4.6)
+            cmap_corr = LinearSegmentedColormap.from_list("corr_pink", ["#fff1fa", "#9b8aff", PRIMARY], N=256)
+            sns.heatmap(corr, annot=True, fmt=".2f", cmap=cmap_corr, ax=ax, cbar_kws={"label":"Correlation"})
+            ax.set_title("Correlation Heatmap")
+            apply_theme(ax); st.pyplot(fig)
+
+    # ====== Optional: CO₂/ASEAN special charts (only if applicable) ======
     required_cols = {"Year", "Country Name", "CO2_per_capita"}
     has_co2_view = required_cols.issubset(df_base.columns)
-
-    if not has_co2_view:
-        st.info("No CO₂-specific columns were detected. Use **Generic Visualise** or map columns on Upload page.")
-
     if has_co2_view:
-        ymin, ymax = int(df_base["Year"].min()), int(df_base["Year"].max())
-        year_range = st.slider("Year range", min_value=ymin, max_value=ymax, value=(max(1990, ymin), ymax), step=1)
+        with st.expander("Special CO₂/ASEAN charts (auto-enabled if columns exist)"):
+            ymin, ymax = int(df_base["Year"].min()), int(df_base["Year"].max())
+            year_range = st.slider("Year range", min_value=ymin, max_value=ymax, value=(max(1990, ymin), ymax), step=1)
 
-        labels = {
-            "line": "**Line:**  Malaysia vs ASEAN vs World",
-            "bar":  "**Bar:**   Latest Year (ASEAN + World)",
-            "heat": "**Heatmap:** ASEAN & World (1990–2023)",
-        }
-        view = st.radio("Visualisation", options=["line","bar","heat"], format_func=lambda k: labels[k], horizontal=True)
+            labels = {
+                "line": "Line: Country vs ASEAN vs World",
+                "bar":  "Bar: Latest Year (ASEAN + World)",
+                "heat": "Heatmap: ASEAN & World",
+            }
+            view = st.radio("Chart", options=["line","bar","heat"], format_func=lambda k: labels[k], horizontal=True)
 
-        combined = compute_combined(df_base)
+            combined = compute_combined(df_base)
 
-        if view == "line":
-            line_chart(combined, year_range)
-            st.markdown("**Observation (Malaysia-focused):** Since the late 1990s, Malaysia’s per-capita CO$_2$ has stayed above the world average; the gap with ASEAN narrowed after the 2010s as regional averages rose and Malaysia stabilized.")
-        elif view == "bar":
-            bar_chart(df_base, year_range)
-            latest_year_bar = min(max(df_base["Year"]), year_range[1])
-            st.markdown(f"**Observation:** In **{latest_year_bar}**, Malaysia ranks in the upper tier of ASEAN; Brunei / Singapore remain notably higher, while Cambodia / Myanmar are much lower; World is shown as a baseline.")
-        else:
-            heatmap_chart(df_base, year_range)
-            st.markdown("**Observation:** Heatmap is sorted by the most recent year to highlight relative levels; Malaysia rose in the 2000s and has stabilized in recent years.")
-
-    # ====== 通用可视化（任何数据）======
-    st.markdown("---")
-    with st.expander("Generic Visualise (any dataset)"):
-        gv = st.session_state.get("generic_view", None)
-        use_generic = st.toggle(
-            "Priority is given to using the view generated by Column Mapper (if available).",
-            value=True if gv is not None else False
-        )
-        plot_df = gv if (use_generic and gv is not None) else df_base.copy()
-
-        for c in plot_df.columns:
-            if "year" in c.lower():
-                try:
-                    plot_df[c] = pd.to_datetime(plot_df[c].astype(str), errors="coerce", format="%Y")
-                except Exception:
-                    pass
-
-        st.write("**A preview of the data currently used for plotting:**")
-        st.dataframe(plot_df.head(5), use_container_width=True)
-
-        num_cols = plot_df.select_dtypes(include="number").columns.tolist()
-        dt_cols  = [c for c in plot_df.columns if np.issubdtype(plot_df[c].dtype, np.datetime64)]
-        cat_cols = [c for c in plot_df.columns if c not in num_cols + dt_cols]
-
-        chart = st.selectbox(
-            "Chart Type",
-            ["Histogram", "Bar (agg)", "Line (time)", "Scatter", "Correlation Heatmap"]
-        )
-
-        if chart == "Histogram":
-            if not num_cols:
-                st.warning("No numeric columns detected. Please specify a Value in the Column Mapper or select a different chart type.")
+            if view == "line":
+                line_chart(combined, year_range)
+            elif view == "bar":
+                bar_chart(df_base, year_range)
             else:
-                col  = st.selectbox("Numeric column(s)", num_cols)
-                bins = st.slider("Bins", 5, 80, 30)
-                fig, ax = new_fig()
-                edge = "white" if IS_DARK else "#2b2b2b"
-                ax.hist(plot_df[col].dropna(), bins=bins, color=PRIMARY, edgecolor=edge, linewidth=0.8, alpha=0.95)
-                ax.set_title(f"Histogram – {col}")
-                ax.set_xlabel(col); ax.set_ylabel("Count")
-                apply_theme(ax); st.pyplot(fig)
-
-        elif chart == "Bar (agg)":
-            if not num_cols or not (cat_cols or dt_cols):
-                st.warning("A grouping column (category or time) and a numeric column are required.")
-            else:
-                x   = st.selectbox("Grouping Column (X)", cat_cols + dt_cols)
-                y   = st.selectbox("Numeric Column (Y)", num_cols)
-                agg = st.selectbox("Aggregation Method", ["mean","sum","median"])
-                data = getattr(plot_df.groupby(x)[y], agg)().reset_index()
-
-                fig, ax = new_fig()
-                if x in dt_cols:
-                    data = data.sort_values(x)
-                    sns.lineplot(data=data, x=x, y=y, marker="o", ax=ax, color=PRIMARY)
-                    ax.set_title(f"{agg.title()} {y} over {x}")
-                else:
-                    sns.barplot(data=data, x=y, y=x, ax=ax, palette=brand_palette(5))
-                    ax.set_title(f"{agg.title()} {y} by {x}")
-                apply_theme(ax); st.pyplot(fig)
-
-        elif chart == "Line (time)":
-            if not dt_cols or not num_cols:
-                st.warning("A datetime column and a numeric column are required.")
-            else:
-                t = st.selectbox("Time Column", dt_cols)
-                y = st.selectbox("Numeric Column (Y)", num_cols)
-                g = st.selectbox("Grouping (Optional)", ["(none)"] + cat_cols)
-                data = plot_df.dropna(subset=[t, y]).sort_values(t)
-
-                fig, ax = new_fig()
-                if g != "(none)":
-                    sns.lineplot(data=data, x=t, y=y, hue=g, marker="o", ax=ax, palette=brand_palette(6))
-                else:
-                    sns.lineplot(data=data, x=t, y=y, marker="o", ax=ax, color=PRIMARY)
-                ax.set_title(f"{y} over {t}")
-                apply_theme(ax); st.pyplot(fig)
-
-        elif chart == "Scatter":
-            if len(num_cols) < 2:
-                st.warning("At least two numeric columns are required.")
-            else:
-                x = st.selectbox("X (Numeric)", num_cols, key="sc_x")
-                y = st.selectbox("Y (Numeric)", num_cols, key="sc_y")
-                g = st.selectbox("Color Grouping (Optional)", ["(none)"] + cat_cols, key="sc_g")
-
-                fig, ax = new_fig()
-                if g != "(none)":
-                    sns.scatterplot(data=plot_df, x=x, y=y, hue=g, ax=ax, palette=brand_palette(6))
-                else:
-                    sns.scatterplot(data=plot_df, x=x, y=y, ax=ax, color=PRIMARY)
-                ax.set_title(f"{y} vs {x}")
-                apply_theme(ax); st.pyplot(fig)
-
-        else:  # Correlation Heatmap
-            nums = plot_df.select_dtypes(include="number")
-            if nums.shape[1] < 2:
-                st.warning("A correlation heatmap requires at least two numeric columns.")
-            else:
-                corr = nums.corr(numeric_only=True)
-                fig, ax = new_fig(7.5, 4.6)
-                cmap_corr = LinearSegmentedColormap.from_list("corr_pink", ["#fff1fa", "#9b8aff", PRIMARY], N=256)
-                sns.heatmap(corr, annot=True, fmt=".2f", cmap=cmap_corr, ax=ax, cbar_kws={"label":"Correlation"})
-                ax.set_title("Correlation Heatmap")
-                apply_theme(ax); st.pyplot(fig)
+                heatmap_chart(df_base, year_range)
 
 # ----------------------------
 # 4) Report（自动方法摘要）
@@ -840,4 +829,4 @@ with tab_report:
         )
 
 st.divider()
-st.caption("Tip: Upload → Clean → Visualise → Report. The pipeline is reproducible and exportable.")
+st.caption("Upload any dataset → Clean → Visualise. Generic visualisations adapt to your columns; CO₂ charts appear only if applicable.")
