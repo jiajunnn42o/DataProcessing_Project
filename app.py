@@ -75,20 +75,18 @@ def apply_theme(ax):
             leg.get_title().set_color(TXT)
         for t in leg.get_texts():
             t.set_color(TXT)
+
 # ---- Brand helpers (GLOBAL) ----
 IS_DARK = (_luma(BG) < 0.5)
 
 def brand_palette(n=6):
-    # 你的粉紫主题调色
     base = [PRIMARY, "#9b8aff", "#6f6f7a", "#d9b3ff", "#b38dff", "#ff99f3"]
     return base[:max(1, n)]
 
 def new_fig(w=7.2, h=4.2):
-    # 统一较小图幅，避免霸屏
     fig, ax = plt.subplots(figsize=(w, h))
     return fig, ax
 
-# （可选）全局设定 seaborn 默认调色为粉紫系
 sns.set_palette(brand_palette(6))
 
 # ----------------------------
@@ -97,16 +95,10 @@ sns.set_palette(brand_palette(6))
 def smart_read(uploaded_file):
     """
     Robust reader for CSV/Excel with World Bank wide-to-long reshape.
-
-    - Excel: read directly
-    - CSV: autodetect delimiter; fallback to common seps; skip bad lines
-    - If a World Bank-like wide table is detected (year columns like 1960..2023),
-      reshape to long with: Country Name, Year, CO2_per_capita
     """
     name = uploaded_file.name.lower()
 
     def postprocess_df(df: pd.DataFrame) -> pd.DataFrame:
-        # 1) 识别宽表的年份列
         year_cols = [c for c in df.columns if re.fullmatch(r"\d{4}", str(c))]
         if year_cols and ("Country Name" in df.columns or "country" in [c.lower() for c in df.columns]):
             id_candidates = ["Country Name", "Country Code", "Indicator Name", "Indicator Code",
@@ -135,10 +127,9 @@ def smart_read(uploaded_file):
             m["CO2_per_capita"] = pd.to_numeric(m["CO2_per_capita"], errors="coerce")
             m = m.dropna(subset=["Year", "CO2_per_capita"])
             m["Year"] = m["Year"].astype(int)
-
             return m[["Country Name", "Year", "CO2_per_capita"]]
 
-        # 2) 已是长表：尝试统一列名
+        # long form unify
         mapping = {}
         for c in df.columns:
             lc = str(c).lower().strip()
@@ -151,7 +142,6 @@ def smart_read(uploaded_file):
         if mapping:
             df = df.rename(columns=mapping)
 
-        # 数值化 & 去缺
         if {"Country Name", "Year", "CO2_per_capita"}.issubset(df.columns):
             df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
             df["CO2_per_capita"] = pd.to_numeric(df["CO2_per_capita"], errors="coerce")
@@ -159,12 +149,10 @@ def smart_read(uploaded_file):
             df["Year"] = df["Year"].astype(int)
         return df
 
-    # Excel
     if name.endswith((".xlsx", ".xls")):
         df = pd.read_excel(uploaded_file)
         return postprocess_df(df)
 
-    # CSV：剪掉前言行，自动识别表头
     raw = uploaded_file.read().decode("utf-8", errors="ignore")
     header_candidates = ["country", "country name", "year", "co2", "value", "indicator code"]
     lines = raw.splitlines()
@@ -199,7 +187,7 @@ if "df_raw" not in st.session_state:    st.session_state.df_raw = None
 if "df_clean" not in st.session_state:  st.session_state.df_clean = None
 if "pipeline" not in st.session_state:  st.session_state.pipeline = []
 if "generic_view" not in st.session_state: st.session_state.generic_view = None
-if "last_upload_name" not in st.session_state: st.session_state.last_upload_name = None  # NEW
+if "last_upload_name" not in st.session_state: st.session_state.last_upload_name = None
 
 # ----------------------------
 # 默认数据（你的 CO₂ CSV）
@@ -236,11 +224,7 @@ def line_chart(combined, year_range):
         combined["Country Name"].isin(["Malaysia", "ASEAN Average", "World"])
         & (combined["Year"].between(*year_range))
     ]
-    palette = {
-        "Malaysia": PRIMARY,
-        "ASEAN Average": "#9b8aff",
-        "World": "#6fc3ff"
-    }
+    palette = {"Malaysia": PRIMARY, "ASEAN Average": "#9b8aff", "World": "#6fc3ff"}
     fig, ax = plt.subplots(figsize=(9.5, 5.2))
     sns.lineplot(
         data=plot_df, x="Year", y="CO2_per_capita",
@@ -346,41 +330,109 @@ with tab_upload:
             st.session_state.df_raw = load_default()
             st.session_state.df_clean = None
             st.session_state.pipeline = [{"step":"load_default", "args": {}}]
-            st.session_state.last_upload_name = "__DEFAULT__"  # NEW
+            st.session_state.last_upload_name = "__DEFAULT__"
             st.success("Loaded built-in dataset.")
-    # Only process when a NEW file is chosen
-    if up is not None and st.session_state.last_upload_name != up.name:  # NEW
+    if up is not None and st.session_state.last_upload_name != up.name:
         try:
             df_raw = smart_read(up)
             st.session_state.df_raw = df_raw
             st.session_state.df_clean = None
             st.session_state.pipeline = [{"step":"upload", "args":{"filename": up.name}}]
-            st.session_state.last_upload_name = up.name  # NEW
+            st.session_state.last_upload_name = up.name
             st.success(f"Uploaded: {up.name}  (rows={len(df_raw)}, cols={len(df_raw.columns)})")
         except Exception as e:
             st.error(f"Failed to read file: {e}")
 
     df_show = st.session_state.df_clean if st.session_state.df_clean is not None else st.session_state.df_raw
     if df_show is not None:
-        # 更直观的标题
         st.markdown("**Data preview (first 10 rows)**")
         st.dataframe(df_show.head(10), use_container_width=True)
 
         st.markdown("**Missing values by column**")
         st.write(df_show.isna().sum())
 
-        st.markdown("**Duplicate rows**")
-        st.write(df_show.duplicated().sum())
+        # ---------- ENHANCED DUPLICATES SECTION ----------
+        st.markdown("### Duplicate Analysis")
+        dup_total = int(df_show.duplicated().sum())
 
-        # ====== 通用：列映射器（当没有 CO₂ 专用列时使用）======
+        # Info card
+        st.markdown(
+            f"""
+            <div style="
+                background-color:{SEC};
+                border: 1px solid {GRID};
+                border-radius: 12px;
+                padding: 18px 24px;
+                margin: 6px 0 12px 0;
+                box-shadow: 0px 2px 6px rgba(0,0,0,0.15);
+            ">
+                <h4 style="margin-bottom:8px; color:{TXT};">Duplicate Rows Summary</h4>
+                <p style="font-size:16px; color:{TXT}; margin:0;">
+                    Total duplicate rows detected:
+                    <span style="font-weight:700; color:{PRIMARY}; font-size:18px;">{dup_total:,}</span>
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        with st.expander("Find & filter duplicates by columns"):
+            # columns that actually have any duplicates (optional hint)
+            cols_with_dups = [
+                c for c in df_show.columns
+                if pd.Series(df_show[c]).duplicated(keep=False).any()
+            ]
+            cols_pick = st.multiselect(
+                "Columns to consider for duplicates (leave empty = all columns)",
+                options=df_show.columns.tolist(),
+                default=cols_with_dups,
+            )
+
+            keep_mode = st.selectbox(
+                "Mark which occurrence as duplicate",
+                ["first", "last", "none (mark all)"],
+                help="Matches pandas.duplicated(keep=...) behaviour.",
+            )
+            keep_arg = {"first": "first", "last": "last", "none (mark all)": False}[keep_mode]
+
+            if st.button("Analyse duplicates", key="btn_analyse_dups"):
+                subset_arg = cols_pick if len(cols_pick) > 0 else None
+                dup_mask = df_show.duplicated(subset=subset_arg, keep=keep_arg)
+
+                st.info(f"Rows flagged as duplicates: **{int(dup_mask.sum()):,}**")
+                st.dataframe(df_show[dup_mask].head(200), use_container_width=True)
+
+                # Group report in strict descending order
+                if subset_arg:
+                    cols = subset_arg if isinstance(subset_arg, list) else [subset_arg]
+                    grp = (
+                        df_show.loc[dup_mask, cols]
+                        .groupby(cols, dropna=False)
+                        .size()
+                        .reset_index(name="count")
+                        .sort_values("count", ascending=False, kind="mergesort")
+                    )
+                    st.markdown("**Duplicate groups (top 50)**")
+                    st.dataframe(grp.head(50), use_container_width=True)
+
+                csv_dups = df_show[dup_mask].to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "Download duplicate rows (CSV)",
+                    csv_dups,
+                    file_name="duplicates_filtered.csv",
+                    mime="text/csv",
+                    key="dl_dups",
+                )
+        # ---------- END ENHANCED DUPLICATES SECTION ----------
+
+        # ====== Column Mapper（当没有 CO₂ 专用列时使用）======
         required = {"Year", "Country Name", "CO2_per_capita"}
         if not required.issubset(df_show.columns):
             st.markdown("### Column Mapper（Universal Data Adaptation）")
-            st.info("The current data does not contain column names specific to CO₂. You can map your own columns to universal roles (time/grouping/values) for universal visualization.")
+            st.info("The current data does not contain column names specific to CO₂. Map your own columns for generic viz.")
 
             cols = df_show.columns.tolist()
 
-            # 自动猜测时间列
             time_candidates = [c for c in cols if np.issubdtype(df_show[c].dtype, np.datetime64)]
             if not time_candidates:
                 for c in cols:
@@ -393,7 +445,7 @@ with tab_upload:
 
             col_time = st.selectbox("Time/Year（Optional）", ["(none)"] + time_candidates + [c for c in cols if c not in time_candidates])
             col_cat  = st.selectbox("Category/Group（Optional）", ["(none)"] + cols)
-            # 只列出可数值化的列
+
             numeric_like = []
             for c in cols:
                 if pd.api.types.is_numeric_dtype(df_show[c]):
@@ -414,19 +466,16 @@ with tab_upload:
                 if col_val  != "(none)": rename[col_val]  = "Value"
                 mapped = mapped.rename(columns=rename)
 
-                # 解析 Year
                 if "Year" in mapped.columns:
                     try:
                         mapped["Year"] = pd.to_datetime(mapped["Year"], errors="coerce", infer_datetime_format=True)
                     except Exception:
                         pass
-
-                # 数值化 Value
                 if "Value" in mapped.columns:
                     mapped["Value"] = pd.to_numeric(mapped["Value"], errors="coerce")
 
                 st.session_state.generic_view = mapped
-                st.success("A universal mapping view has been generated. Use it in the 'Generic Visualise' section on the Visualise page.")
+                st.success("A universal mapping view has been generated. Use it in Visualise → Generic Visualise.")
 
 # ----------------------------
 # 2) Clean & Transform
@@ -434,7 +483,6 @@ with tab_upload:
 with tab_clean:
     st.subheader("Step-by-step cleaning with preview and pipeline log")
 
-    # 模式选择（放在 Clean 页里）
     clean_mode = st.radio(
         "Cleaning Mode",
         ["Manual", "Auto"],
@@ -443,14 +491,11 @@ with tab_clean:
         key="clean_mode_radio",
     )
 
-    # “只跑一次”的保护
     if "auto_done" not in st.session_state:
         st.session_state.auto_done = False
 
-    # 基础数据
     base = st.session_state.df_clean if st.session_state.df_clean is not None else st.session_state.df_raw
 
-    # Auto：仅首次切到 Auto 时执行
     if clean_mode == "Auto":
         if st.session_state.df_raw is None and base is None:
             st.info("No data yet. Go to **Upload & Inspect** to load a dataset.")
@@ -460,11 +505,8 @@ with tab_clean:
                 st.warning("No data to clean. Please upload or load the default dataset in 'Upload & Inspect'.")
                 st.stop()
             df = src.copy()
-            # 1) 缺失值（数值列填均值）
             df = df.fillna(df.mean(numeric_only=True))
-            # 2) 去重
             df = df.drop_duplicates()
-            # 3) object → numeric（失败忽略）
             for col in df.columns:
                 if df[col].dtype == "object":
                     try:
@@ -484,24 +526,21 @@ with tab_clean:
     else:
         st.session_state.auto_done = False
 
-    # Manual 工具区
     base = st.session_state.df_clean if st.session_state.df_clean is not None else st.session_state.df_raw
     if base is None:
         st.info("No data yet. Go to **Upload & Inspect** to load a dataset.")
         st.stop()
 
-    # ------- 仍在 with tab_clean: 块内部 -------
     df_work = base.copy()
     st.markdown("### Actions")
 
     act = st.selectbox(
         "Choose an action",
         ["(select)", "Filter rows (keep/remove)", "Handle missing values",
-        "Remove duplicates", "Cast to numeric", "Min-Max scale"]
+         "Remove duplicates", "Cast to numeric", "Min-Max scale"]
     )
 
     if act == "Filter rows (keep/remove)":
-        # 选择用于筛选的列（默认猜测 Country 列）
         try:
             default_idx = next(
                 i for i, c in enumerate(df_work.columns)
@@ -526,7 +565,7 @@ with tab_clean:
         picked = st.multiselect("Pick values", options=uniq_vals, default=preselected)
 
         pasted = st.text_area("Or paste values (comma/semicolon/newline separated)",
-                            placeholder="Malaysia, Singapore, Thailand\nVietnam")
+                              placeholder="Malaysia, Singapore, Thailand\nVietnam")
         if pasted.strip():
             extra = [s.strip() for s in re.split(r"[,;\n]", pasted) if s.strip()]
             picked = sorted(set(picked) | set(extra))
@@ -614,7 +653,6 @@ with tab_clean:
             st.session_state.df_clean = df_work
             st.session_state.pipeline.append({"step": "minmax", "args": {"cols": cols}})
             st.success("Scaled.")
-    # ------- 以上整段必须保持在 with tab_clean: 的缩进层级 -------
 
     # 导出
     st.markdown("### Export cleaned data")
@@ -637,7 +675,6 @@ with tab_clean:
 with tab_viz:
     st.subheader("Visualisations")
 
-    # 选择用于绘图的数据源：优先 clean → raw → default
     if st.session_state.df_clean is not None and not st.session_state.df_clean.empty:
         df_base = st.session_state.df_clean
     elif st.session_state.df_raw is not None and not st.session_state.df_raw.empty:
@@ -645,14 +682,12 @@ with tab_viz:
     else:
         df_base = load_default()
 
-    # CO₂ 专用列是否存在
     required_cols = {"Year", "Country Name", "CO2_per_capita"}
     has_co2_view = required_cols.issubset(df_base.columns)
 
     if not has_co2_view:
-        st.info("No CO₂-specific columns were detected. You can still use the **Generic Visualise** feature below for arbitrary data visualization, or first use the **Column Mapper** on the Upload page for column mapping.")
+        st.info("No CO₂-specific columns were detected. Use **Generic Visualise** or map columns on Upload page.")
 
-    # 仅当具备 CO₂ 列时，展示你的三张图
     if has_co2_view:
         ymin, ymax = int(df_base["Year"].min()), int(df_base["Year"].max())
         year_range = st.slider("Year range", min_value=ymin, max_value=ymax, value=(max(1990, ymin), ymax), step=1)
@@ -668,25 +703,16 @@ with tab_viz:
 
         if view == "line":
             line_chart(combined, year_range)
-            st.markdown(
-                "**Observation (Malaysia-focused):** Since the late 1990s, Malaysia’s per-capita CO$_2$ has stayed above the world average; "
-                "the gap with ASEAN narrowed after the 2010s as regional averages rose and Malaysia stabilized."
-            )
+            st.markdown("**Observation (Malaysia-focused):** Since the late 1990s, Malaysia’s per-capita CO$_2$ has stayed above the world average; the gap with ASEAN narrowed after the 2010s as regional averages rose and Malaysia stabilized.")
         elif view == "bar":
             bar_chart(df_base, year_range)
             latest_year_bar = min(max(df_base["Year"]), year_range[1])
-            st.markdown(
-                f"**Observation:** In **{latest_year_bar}**, Malaysia ranks in the upper tier of ASEAN; Brunei / Singapore remain notably higher, "
-                "while Cambodia / Myanmar are much lower; World is shown as a baseline."
-            )
+            st.markdown(f"**Observation:** In **{latest_year_bar}**, Malaysia ranks in the upper tier of ASEAN; Brunei / Singapore remain notably higher, while Cambodia / Myanmar are much lower; World is shown as a baseline.")
         else:
             heatmap_chart(df_base, year_range)
-            st.markdown(
-                "**Observation:** Heatmap is sorted by the most recent year to highlight relative levels; "
-                "Malaysia rose in the 2000s and has stabilized in recent years."
-            )
+            st.markdown("**Observation:** Heatmap is sorted by the most recent year to highlight relative levels; Malaysia rose in the 2000s and has stabilized in recent years.")
 
-        # ====== 通用可视化（任何数据）======
+    # ====== 通用可视化（任何数据）======
     st.markdown("---")
     with st.expander("Generic Visualise (any dataset)"):
         gv = st.session_state.get("generic_view", None)
@@ -696,7 +722,6 @@ with tab_viz:
         )
         plot_df = gv if (use_generic and gv is not None) else df_base.copy()
 
-        # 自动把名为 Year 或含 year 的列转成 datetime 类型
         for c in plot_df.columns:
             if "year" in c.lower():
                 try:
@@ -704,11 +729,9 @@ with tab_viz:
                 except Exception:
                     pass
 
-
         st.write("**A preview of the data currently used for plotting:**")
         st.dataframe(plot_df.head(5), use_container_width=True)
 
-        # 自动识别列类型
         num_cols = plot_df.select_dtypes(include="number").columns.tolist()
         dt_cols  = [c for c in plot_df.columns if np.issubdtype(plot_df[c].dtype, np.datetime64)]
         cat_cols = [c for c in plot_df.columns if c not in num_cols + dt_cols]
@@ -724,16 +747,9 @@ with tab_viz:
             else:
                 col  = st.selectbox("Numeric column(s)", num_cols)
                 bins = st.slider("Bins", 5, 80, 30)
-                fig, ax = new_fig()  # 小尺寸
+                fig, ax = new_fig()
                 edge = "white" if IS_DARK else "#2b2b2b"
-                ax.hist(
-                    plot_df[col].dropna(),
-                    bins=bins,
-                    color=PRIMARY,              # 粉色主色
-                    edgecolor=edge,
-                    linewidth=0.8,
-                    alpha=0.95
-                )
+                ax.hist(plot_df[col].dropna(), bins=bins, color=PRIMARY, edgecolor=edge, linewidth=0.8, alpha=0.95)
                 ax.set_title(f"Histogram – {col}")
                 ax.set_xlabel(col); ax.set_ylabel("Count")
                 apply_theme(ax); st.pyplot(fig)
@@ -750,22 +766,16 @@ with tab_viz:
                 fig, ax = new_fig()
                 if x in dt_cols:
                     data = data.sort_values(x)
-                    sns.lineplot(
-                        data=data, x=x, y=y, marker="o", ax=ax,
-                        color=PRIMARY   # 单系列用主色
-                    )
+                    sns.lineplot(data=data, x=x, y=y, marker="o", ax=ax, color=PRIMARY)
                     ax.set_title(f"{agg.title()} {y} over {x}")
                 else:
-                    sns.barplot(
-                        data=data, x=y, y=x, ax=ax,
-                        palette=brand_palette(5)  # 多系列用品牌调色
-                    )
+                    sns.barplot(data=data, x=y, y=x, ax=ax, palette=brand_palette(5))
                     ax.set_title(f"{agg.title()} {y} by {x}")
                 apply_theme(ax); st.pyplot(fig)
 
         elif chart == "Line (time)":
             if not dt_cols or not num_cols:
-                st.warning("A datetime column and a numeric column are required. You can map a time column to 'Year' in the Column Mapper (automatic parsing will be attempted).")
+                st.warning("A datetime column and a numeric column are required.")
             else:
                 t = st.selectbox("Time Column", dt_cols)
                 y = st.selectbox("Numeric Column (Y)", num_cols)
@@ -774,15 +784,9 @@ with tab_viz:
 
                 fig, ax = new_fig()
                 if g != "(none)":
-                    sns.lineplot(
-                        data=data, x=t, y=y, hue=g, marker="o", ax=ax,
-                        palette=brand_palette(6)   # 分组线条走粉紫系列
-                    )
+                    sns.lineplot(data=data, x=t, y=y, hue=g, marker="o", ax=ax, palette=brand_palette(6))
                 else:
-                    sns.lineplot(
-                        data=data, x=t, y=y, marker="o", ax=ax,
-                        color=PRIMARY
-                    )
+                    sns.lineplot(data=data, x=t, y=y, marker="o", ax=ax, color=PRIMARY)
                 ax.set_title(f"{y} over {t}")
                 apply_theme(ax); st.pyplot(fig)
 
@@ -796,15 +800,9 @@ with tab_viz:
 
                 fig, ax = new_fig()
                 if g != "(none)":
-                    sns.scatterplot(
-                        data=plot_df, x=x, y=y, hue=g, ax=ax,
-                        palette=brand_palette(6)
-                    )
+                    sns.scatterplot(data=plot_df, x=x, y=y, hue=g, ax=ax, palette=brand_palette(6))
                 else:
-                    sns.scatterplot(
-                        data=plot_df, x=x, y=y, ax=ax,
-                        color=PRIMARY
-                    )
+                    sns.scatterplot(data=plot_df, x=x, y=y, ax=ax, color=PRIMARY)
                 ax.set_title(f"{y} vs {x}")
                 apply_theme(ax); st.pyplot(fig)
 
@@ -815,17 +813,10 @@ with tab_viz:
             else:
                 corr = nums.corr(numeric_only=True)
                 fig, ax = new_fig(7.5, 4.6)
-                # 粉紫梯度
-                cmap_corr = LinearSegmentedColormap.from_list(
-                    "corr_pink", ["#fff1fa", "#9b8aff", PRIMARY], N=256
-                )
-                sns.heatmap(
-                    corr, annot=True, fmt=".2f", cmap=cmap_corr, ax=ax,
-                    cbar_kws={"label": "Correlation"}
-                )
+                cmap_corr = LinearSegmentedColormap.from_list("corr_pink", ["#fff1fa", "#9b8aff", PRIMARY], N=256)
+                sns.heatmap(corr, annot=True, fmt=".2f", cmap=cmap_corr, ax=ax, cbar_kws={"label":"Correlation"})
                 ax.set_title("Correlation Heatmap")
                 apply_theme(ax); st.pyplot(fig)
-
 
 # ----------------------------
 # 4) Report（自动方法摘要）
