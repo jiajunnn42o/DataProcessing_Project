@@ -13,4 +13,6 @@ Developed for BAI21124 Data Processing & Visualisation (Sept 2024).
 ### How to Run
 ```bash
 pip install -r requirements.txt
+pip install plotly streamlit-folium folium
 streamlit run app.py
+
