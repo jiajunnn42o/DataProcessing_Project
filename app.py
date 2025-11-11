@@ -362,11 +362,9 @@ with tab_upload:
 
     df_show = st.session_state.df_clean if st.session_state.df_clean is not None else st.session_state.df_raw
     if df_show is not None:
-        st.markdown("**Preview (head)**")
+        # 更直观的标题
+        st.markdown("**Data preview (first 10 rows)**")
         st.dataframe(df_show.head(10), use_container_width=True)
-
-        st.markdown("**Schema / dtypes**")
-        st.write(df_show.dtypes)
 
         st.markdown("**Missing values by column**")
         st.write(df_show.isna().sum())
