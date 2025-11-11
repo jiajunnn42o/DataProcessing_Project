@@ -755,18 +755,32 @@ with tab_viz:
         chart = st.selectbox("Chart Type (interactive)", chart_options, index=default_idx)
 
         if chart == "Line (time)":
-            if not dt_cols or not num_cols:
-                st.warning("A datetime column and a numeric column are required.")
+            # Allow non-datetime X too
+            x_candidates = dt_cols + cat_cols + num_cols
+            if not num_cols or not x_candidates:
+                st.warning("You need at least one numeric column for Y and one column for X.")
             else:
-                t = st.selectbox("Time Column", dt_cols)
-                y = st.selectbox("Numeric Column (Y)", num_cols)
-                color = st.selectbox("Grouping/Color (optional)", ["(none)"] + cat_cols)
-                hover = st.multiselect("Extra hover fields", [c for c in plot_df.columns if c not in [t, y]])
-                fig = px.line(plot_df.sort_values(t), x=t, y=y,
-                              color=None if color=="(none)" else color,
-                              markers=True,
-                              hover_data=hover,
-                              title=f"{y} over {t}")
+                x = st.selectbox("X Column", x_candidates)
+                y = st.selectbox("Y (Numeric Column)", num_cols)
+                color = st.selectbox("Grouping/Color (optional)", ["(none)"] + [c for c in plot_df.columns if c not in [x, y]])
+                hover = st.multiselect("Extra hover fields", [c for c in plot_df.columns if c not in [x, y]])
+                
+                # Try to parse datetime if it looks like a year string
+                if plot_df[x].dtype == "object":
+                    try:
+                        plot_df[x] = pd.to_datetime(plot_df[x], errors="coerce", infer_datetime_format=True)
+                    except Exception:
+                        pass
+
+                fig = px.line(
+                    plot_df.sort_values(x),
+                    x=x,
+                    y=y,
+                    color=None if color == "(none)" else color,
+                    markers=True,
+                    hover_data=hover,
+                    title=f"{y} over {x}"
+                )
                 st.plotly_chart(fig, use_container_width=True)
 
         elif chart == "Bar (agg)":
