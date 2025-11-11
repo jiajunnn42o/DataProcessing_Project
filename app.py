@@ -93,6 +93,33 @@ def new_fig(w=7.2, h=4.2):
 sns.set_palette(brand_palette(6))
 
 # ----------------------------
+# 辅助增强：重复值指标 & 安全自动数值转换 & 读CSV缓存
+# ----------------------------
+def duplicate_metrics(df, subset=None):
+    mask_first = df.duplicated(subset=subset, keep="first")
+    mask_last  = df.duplicated(subset=subset, keep="last")
+    mask_all   = df.duplicated(subset=subset, keep=False)
+    return {
+        "rows_marked_duplicate (keep='first')": int(mask_first.sum()),
+        "rows_marked_duplicate (keep='last')" : int(mask_last.sum()),
+        "rows_in_duplicated_groups (all)"     : int(mask_all.sum())
+    }, mask_first, mask_all
+
+@st.cache_data(show_spinner=False)
+def _read_csv_fast(text):
+    return pd.read_csv(StringIO(text), sep=None, engine="python")
+
+def _safe_autocast_numeric(df):
+    df = df.copy()
+    for col in df.columns:
+        if df[col].dtype == "object":
+            s = df[col].astype(str).str.replace(r"[,\s]", "", regex=True)
+            frac_numeric = s.str.match(r"^-?\d+(\.\d+)?$").mean()
+            if frac_numeric > 0.9:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+# ----------------------------
 # 智能读取器：CSV/Excel + 世行宽表 reshape
 # ----------------------------
 def smart_read(uploaded_file):
@@ -167,20 +194,18 @@ def smart_read(uploaded_file):
             break
     trimmed = "\n".join(lines[header_row:])
 
-    def _io(text): return StringIO(text)
-
     try:
-        df = pd.read_csv(_io(trimmed), sep=None, engine="python")
+        df = _read_csv_fast(trimmed)
         return postprocess_df(df)
     except Exception:
         pass
     for sep in [",", ";", "\t", "|"]:
         try:
-            df = pd.read_csv(_io(trimmed), sep=sep)
+            df = pd.read_csv(StringIO(trimmed), sep=sep)
             return postprocess_df(df)
         except Exception:
             continue
-    df = pd.read_csv(_io(trimmed), sep=None, engine="python", on_bad_lines="skip")
+    df = pd.read_csv(StringIO(trimmed), sep=None, engine="python", on_bad_lines="skip")
     return postprocess_df(df)
 
 # ----------------------------
@@ -191,6 +216,8 @@ if "df_clean" not in st.session_state:  st.session_state.df_clean = None
 if "pipeline" not in st.session_state:  st.session_state.pipeline = []
 if "generic_view" not in st.session_state: st.session_state.generic_view = None
 if "last_upload_name" not in st.session_state: st.session_state.last_upload_name = None
+if "roles" not in st.session_state:     st.session_state.roles = {"time": None, "category": None, "value": None}
+if "auto_done" not in st.session_state: st.session_state.auto_done = False
 
 # ----------------------------
 # 默认数据（你的 CO₂ CSV） — 保留，但仅在无数据时使用
@@ -348,6 +375,15 @@ with tab_upload:
             st.error(f"Failed to read file: {e}")
 
     df_show = st.session_state.df_clean if st.session_state.df_clean is not None else st.session_state.df_raw
+
+    # --- Status ribbon (enhanced)
+    if df_show is not None:
+        st.info(
+            f"Active dataset: {'cleaned' if st.session_state.df_clean is not None else 'raw'} | "
+            f"Rows: {len(df_show):,} | Columns: {len(df_show.columns):,} | "
+            f"Pipeline steps: {len(st.session_state.pipeline)}"
+        )
+
     if df_show is not None:
         st.markdown("**Data preview (first 10 rows)**")
         st.dataframe(df_show.head(10), use_container_width=True)
@@ -357,7 +393,7 @@ with tab_upload:
 
         # ---------- ENHANCED DUPLICATES SECTION ----------
         st.markdown("### Duplicate Analysis")
-        dup_total = int(df_show.duplicated().sum())
+        metrics, dup_first_mask, dup_all_mask = duplicate_metrics(df_show, subset=None)
 
         st.markdown(
             f"""
@@ -370,10 +406,11 @@ with tab_upload:
                 box-shadow: 0px 2px 6px rgba(0,0,0,0.15);
             ">
                 <h4 style="margin-bottom:8px; color:{TXT};">Duplicate Rows Summary</h4>
-                <p style="font-size:16px; color:{TXT}; margin:0;">
-                    Total duplicate rows detected:
-                    <span style="font-weight:700; color:{PRIMARY}; font-size:18px;">{dup_total:,}</span>
-                </p>
+                <ul style="margin-top:8px;color:{TXT}">
+                  <li>Rows flagged (keep='first'): <b style="color:{PRIMARY}">{metrics["rows_marked_duplicate (keep='first')"]:,}</b></li>
+                  <li>Rows flagged (keep='last') : <b style="color:{PRIMARY}">{metrics["rows_marked_duplicate (keep='last')"]:,}</b></li>
+                  <li>Rows in duplicated groups : <b style="color:{PRIMARY}">{metrics["rows_in_duplicated_groups (all)"]:,}</b></li>
+                </ul>
             </div>
             """,
             unsafe_allow_html=True
@@ -476,10 +513,15 @@ with tab_upload:
                     mapped["Value"] = pd.to_numeric(mapped["Value"], errors="coerce")
 
                 st.session_state.generic_view = mapped
+                st.session_state.roles = {
+                    "time": None if col_time=="(none)" else "Year",
+                    "category": None if col_cat=="(none)" else "Category",
+                    "value": None if col_val=="(none)" else "Value",
+                }
                 st.success("A universal mapping view has been generated. Use it in the Visualise tab → Generic Visualise.")
 
 # ----------------------------
-# 2) Clean & Transform (unchanged logic)
+# 2) Clean & Transform (unchanged logic, but safer auto-cast)
 # ----------------------------
 with tab_clean:
     st.subheader("Step-by-step cleaning with preview and pipeline log")
@@ -491,9 +533,6 @@ with tab_clean:
         horizontal=True,
         key="clean_mode_radio",
     )
-
-    if "auto_done" not in st.session_state:
-        st.session_state.auto_done = False
 
     base = st.session_state.df_clean if st.session_state.df_clean is not None else st.session_state.df_raw
 
@@ -508,17 +547,13 @@ with tab_clean:
             df = src.copy()
             df = df.fillna(df.mean(numeric_only=True))
             df = df.drop_duplicates()
-            for col in df.columns:
-                if df[col].dtype == "object":
-                    try:
-                        df[col] = pd.to_numeric(df[col])
-                    except Exception:
-                        pass
+            # SAFER auto-convert to numeric (enhanced)
+            df = _safe_autocast_numeric(df)
 
             st.session_state.df_clean = df
             st.session_state.pipeline.append({
                 "step": "auto_clean",
-                "args": {"methods": ["fill mean", "drop duplicates", "convert numeric"]}
+                "args": {"methods": ["fill mean", "drop duplicates", "convert numeric (safe)"]}
             })
             st.session_state.auto_done = True
             st.success("Auto cleaning completed.")
@@ -704,19 +739,17 @@ with tab_viz:
         return ("lat" in lc or "latitude" in lc) and ("lon" in lc or "long" in lc or "lng" in lc or "longitude" in lc)
 
     def _country_col(cols):
-        # try to find a column that likely contains country names/codes
         for c in cols:
             lc = str(c).lower()
             if any(k in lc for k in ["country", "nation", "location", "iso", "region"]):
                 return c
         return None
 
-    # We’ll show a recommended chart type
+    # Recommend chart
     recommended = None
     if _has_latlon(plot_df.columns):
         recommended = "map_latlon"
     elif _country_col(plot_df.columns):
-        # country choropleth if there is also at least one numeric column
         recommended = "map_country" if num_cols else None
     elif dt_cols and num_cols:
         recommended = "line"
@@ -727,35 +760,21 @@ with tab_viz:
     elif cat_cols and num_cols:
         recommended = "bar"
 
-    # --- AUTO or Plotly path ---
+    # auto route to map if appropriate
     if inter_mode in ["Auto", "Plotly"]:
-        # If AUTO selected and we detect geographic data, we’ll defer to map unless user forced Plotly
         if inter_mode == "Auto" and recommended in ["map_latlon", "map_country"]:
             inter_mode = "Leaflet (map)"
 
+    # --- Plotly path (with Line index option added) ---
     if inter_mode in ["Auto", "Plotly"]:
         st.write("**Preview of current plotting data:**")
         st.dataframe(plot_df.head(5), use_container_width=True)
 
-        # Let user pick chart type but start with recommendation
-        chart_options = ["Line (time)", "Bar (agg)", "Scatter", "Histogram", "Correlation Heatmap"]
-        # default index based on recommendation
-        default_idx = 0
-        if recommended == "line":
-            default_idx = 0
-        elif recommended == "bar":
-            default_idx = 1
-        elif recommended == "scatter":
-            default_idx = 2
-        elif recommended == "hist":
-            default_idx = 3
-        else:
-            default_idx = 0
-
+        chart_options = ["Line (time)", "Line (index)", "Bar (agg)", "Scatter", "Histogram", "Correlation Heatmap"]
+        default_idx = 0 if recommended == "line" else (2 if recommended == "bar" else (3 if recommended == "scatter" else (4 if recommended == "hist" else 0)))
         chart = st.selectbox("Chart Type (interactive)", chart_options, index=default_idx)
 
         if chart == "Line (time)":
-            # Allow non-datetime X too
             x_candidates = dt_cols + cat_cols + num_cols
             if not num_cols or not x_candidates:
                 st.warning("You need at least one numeric column for Y and one column for X.")
@@ -764,23 +783,28 @@ with tab_viz:
                 y = st.selectbox("Y (Numeric Column)", num_cols)
                 color = st.selectbox("Grouping/Color (optional)", ["(none)"] + [c for c in plot_df.columns if c not in [x, y]])
                 hover = st.multiselect("Extra hover fields", [c for c in plot_df.columns if c not in [x, y]])
-                
-                # Try to parse datetime if it looks like a year string
                 if plot_df[x].dtype == "object":
                     try:
                         plot_df[x] = pd.to_datetime(plot_df[x], errors="coerce", infer_datetime_format=True)
                     except Exception:
                         pass
-
                 fig = px.line(
                     plot_df.sort_values(x),
-                    x=x,
-                    y=y,
-                    color=None if color == "(none)" else color,
-                    markers=True,
-                    hover_data=hover,
-                    title=f"{y} over {x}"
+                    x=x, y=y, color=None if color == "(none)" else color,
+                    markers=True, hover_data=hover, title=f"{y} over {x}"
                 )
+                fig.update_traces(hovertemplate=f"{x}=%{{x}}<br>{y}=%{{y:.3f}}<extra></extra>")
+                st.plotly_chart(fig, use_container_width=True)
+
+        elif chart == "Line (index)":
+            if not num_cols:
+                st.warning("At least one numeric column is required.")
+            else:
+                y = st.selectbox("Numeric column (Y)", num_cols)
+                df_idx = plot_df.reset_index()
+                idx = df_idx.columns[0]
+                fig = px.line(df_idx, x=idx, y=y, markers=True, title=f"{y} over row index")
+                fig.update_traces(hovertemplate=f"Index=%{{x}}<br>{y}=%{{y:.3f}}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
 
         elif chart == "Bar (agg)":
@@ -791,13 +815,12 @@ with tab_viz:
                 y = st.selectbox("Numeric Column (Y)", num_cols)
                 agg = st.selectbox("Aggregation", ["mean","sum","median"])
                 df_agg = getattr(plot_df.groupby(x)[y], agg)().reset_index()
-                # time grouping gets a line; category gets a bar
                 if x in dt_cols:
-                    fig = px.line(df_agg.sort_values(x), x=x, y=y, markers=True,
-                                  title=f"{agg.title()} of {y} over {x}")
+                    fig = px.line(df_agg.sort_values(x), x=x, y=y, markers=True, title=f"{agg.title()} of {y} over {x}")
+                    fig.update_traces(hovertemplate=f"{x}=%{{x}}<br>{y}=%{{y:.3f}}<extra></extra>")
                 else:
-                    fig = px.bar(df_agg, x=y, y=x, orientation="h",
-                                 title=f"{agg.title()} of {y} by {x}")
+                    fig = px.bar(df_agg, x=y, y=x, orientation="h", title=f"{agg.title()} of {y} by {x}")
+                    fig.update_traces(hovertemplate=f"{x}=%{{y}}<br>{y}=%{{x:.3f}}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
 
         elif chart == "Scatter":
@@ -809,12 +832,13 @@ with tab_viz:
                 color = st.selectbox("Color (optional)", ["(none)"] + cat_cols, key="px_sc_c")
                 size  = st.selectbox("Bubble size (optional)", ["(none)"] + num_cols, key="px_sc_s")
                 hover = st.multiselect("Extra hover fields", [c for c in plot_df.columns if c not in [x, y]])
-                fig = px.scatter(plot_df, x=x, y=y,
-                                 color=None if color=="(none)" else color,
-                                 size=None if size=="(none)" else size,
-                                 hover_data=hover,
-                                 trendline=None,
-                                 title=f"{y} vs {x}")
+                fig = px.scatter(
+                    plot_df, x=x, y=y,
+                    color=None if color=="(none)" else color,
+                    size=None if size=="(none)" else size,
+                    hover_data=hover, trendline=None, title=f"{y} vs {x}"
+                )
+                fig.update_traces(hovertemplate=f"{x}=%{{x:.3f}}<br>{y}=%{{y:.3f}}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
 
         elif chart == "Histogram":
@@ -824,6 +848,7 @@ with tab_viz:
                 col = st.selectbox("Numeric column", num_cols)
                 bins = st.slider("Bins", 5, 80, 30)
                 fig = px.histogram(plot_df, x=col, nbins=bins, title=f"Histogram — {col}")
+                fig.update_traces(hovertemplate=f"{col}=%{{x}}<br>Count=%{{y}}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
 
         else:  # Correlation Heatmap
@@ -832,9 +857,8 @@ with tab_viz:
                 st.warning("A correlation heatmap requires at least two numeric columns.")
             else:
                 corr = nums.corr(numeric_only=True)
-                # Plotly heatmap
                 fig = px.imshow(corr, text_auto=True, aspect="auto", title="Correlation Heatmap",
-                                color_continuous_scale="RdPu")
+                                color_continuous_scale=["#fff1fa", "#9b8aff", PRIMARY])
                 st.plotly_chart(fig, use_container_width=True)
 
     # --- LEAFLET MAP path (auto or forced) ---
@@ -849,11 +873,9 @@ with tab_viz:
             lat_col = st.selectbox("Latitude column", lat_candidates)
             lon_col = st.selectbox("Longitude column", lon_candidates)
             popup_col = st.selectbox("Popup/label column (optional)", ["(none)"] + [c for c in cols if c not in [lat_col, lon_col]])
-            # center
             center_lat = plot_df[lat_col].dropna().astype(float).mean() if not plot_df[lat_col].dropna().empty else 3.1390
             center_lon = plot_df[lon_col].dropna().astype(float).mean() if not plot_df[lon_col].dropna().empty else 101.6869
             m = folium.Map(location=[center_lat, center_lon], tiles="OpenStreetMap", zoom_start=4)
-            # add markers
             for _, row in plot_df.dropna(subset=[lat_col, lon_col]).iterrows():
                 popup_text = None if popup_col=="(none)" else str(row[popup_col])
                 folium.CircleMarker(
@@ -863,7 +885,6 @@ with tab_viz:
             st_folium(m, use_container_width=True, returned_objects=[])
 
         elif country_col and num_cols:
-            # Choropleth by country names (Plotly is simpler for choropleth with country names)
             target_metric = st.selectbox("Metric (numeric)", num_cols)
             fig = px.choropleth(
                 plot_df.dropna(subset=[country_col]),
