@@ -9,8 +9,11 @@ from matplotlib.colors import LinearSegmentedColormap
 from io import StringIO
 import re
 import plotly.express as px
+import plotly.io as pio
 from streamlit_folium import st_folium
 import folium
+from folium.plugins import MarkerCluster
+import json
 
 # ----------------------------
 # 页面设置
@@ -91,6 +94,13 @@ def new_fig(w=7.2, h=4.2):
     return fig, ax
 
 sns.set_palette(brand_palette(6))
+
+# Plotly theme + color-blind palette
+CB_SAFE = [
+    "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
+    "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AB"
+]
+pio.templates.default = "plotly_dark" if IS_DARK else "plotly_white"
 
 # ----------------------------
 # 辅助增强：重复值指标 & 安全自动数值转换 & 读CSV缓存
@@ -265,6 +275,7 @@ def line_chart(combined, year_range):
     ax.set_title("Malaysia vs ASEAN Average vs World")
     apply_theme(ax); plt.tight_layout(pad=1.5)
     st.pyplot(fig)
+    plt.close(fig)
 
 def bar_chart(df_base, year_range):
     latest_year = min(max(df_base["Year"]), year_range[1])
@@ -289,6 +300,7 @@ def bar_chart(df_base, year_range):
         ax.text(v + 0.1, i, f"{v:.1f}", va="center", color=TXT)
     apply_theme(ax); plt.tight_layout(pad=1.5)
     st.pyplot(fig)
+    plt.close(fig)
 
 def heatmap_chart(df_base, year_range):
     hm = df_base[df_base["Country Name"].isin(ASEAN + ["World"])]
@@ -333,6 +345,7 @@ def heatmap_chart(df_base, year_range):
 
     apply_theme(ax)
     st.pyplot(fig)
+    plt.close(fig)
 
 # ----------------------------
 # 顶部标题（动态：根据上传文件名）
@@ -370,6 +383,8 @@ with tab_upload:
             st.session_state.df_clean = None
             st.session_state.pipeline = [{"step":"upload", "args":{"filename": up.name}}]
             st.session_state.last_upload_name = up.name
+            if len(df_raw) > 500_000:
+                st.warning(f"Large dataset detected: {len(df_raw):,} rows. Some operations may be slow; visualisations may use only subsets.")
             st.success(f"Uploaded: {up.name}  (rows={len(df_raw)}, cols={len(df_raw.columns)})")
         except Exception as e:
             st.error(f"Failed to read file: {e}")
@@ -390,6 +405,17 @@ with tab_upload:
 
         st.markdown("**Missing values by column**")
         st.write(df_show.isna().sum())
+
+        # Quick data profile
+        with st.expander("Quick data profile"):
+            num = df_show.select_dtypes(include="number")
+            cat = df_show.select_dtypes(exclude="number")
+            if not num.empty:
+                st.markdown("**Numeric summary**")
+                st.dataframe(num.describe().T)
+            if not cat.empty:
+                st.markdown("**Categorical unique counts**")
+                st.dataframe(cat.nunique().rename("n_unique"))
 
         # ---------- ENHANCED DUPLICATES SECTION ----------
         st.markdown("### Duplicate Analysis")
@@ -520,6 +546,24 @@ with tab_upload:
                 }
                 st.success("A universal mapping view has been generated. Use it in the Visualise tab → Generic Visualise.")
 
+        # Export / import roles mapping
+        with st.expander("Save or load column-role mapping (roles.json)"):
+            roles_json = json.dumps(st.session_state.roles)
+            st.download_button(
+                "Download roles.json",
+                roles_json.encode("utf-8"),
+                file_name="roles.json",
+                mime="application/json",
+                key="dl_roles",
+            )
+            roles_file = st.file_uploader("Import roles.json", type=["json"], key="roles_in")
+            if roles_file is not None:
+                try:
+                    st.session_state.roles = json.loads(roles_file.read().decode("utf-8"))
+                    st.success("Roles mapping imported. Visualisation defaults will follow these roles.")
+                except Exception as e:
+                    st.error(f"Failed to import roles: {e}")
+
 # ----------------------------
 # 2) Clean & Transform (unchanged logic, but safer auto-cast)
 # ----------------------------
@@ -573,7 +617,8 @@ with tab_clean:
     act = st.selectbox(
         "Choose an action",
         ["(select)", "Filter rows (keep/remove)", "Handle missing values",
-         "Remove duplicates", "Cast to numeric", "Min-Max scale"]
+         "Remove duplicates", "Cast to numeric", "Min-Max scale",
+         "Clip outliers (IQR)", "Standardize text categories"]
     )
 
     if act == "Filter rows (keep/remove)":
@@ -690,6 +735,33 @@ with tab_clean:
             st.session_state.pipeline.append({"step": "minmax", "args": {"cols": cols}})
             st.success("Scaled.")
 
+    elif act == "Clip outliers (IQR)":
+        cols = st.multiselect("Numeric columns to clip", df_work.select_dtypes(include=np.number).columns.tolist())
+        if st.button("Apply", key="apply_iqr"):
+            before_stats = df_work[cols].describe().to_dict() if cols else {}
+            for c in cols:
+                q1, q3 = df_work[c].quantile([0.25, 0.75])
+                iqr = q3 - q1
+                lo, hi = q1 - 1.5*iqr, q3 + 1.5*iqr
+                df_work[c] = df_work[c].clip(lo, hi)
+            st.session_state.df_clean = df_work
+            st.session_state.pipeline.append({"step": "clip_iqr", "args": {"cols": cols, "before": before_stats}})
+            st.success("Outliers clipped using IQR method.")
+
+    elif act == "Standardize text categories":
+        cols = st.multiselect("Text columns to standardize", df_work.select_dtypes(include="object").columns.tolist())
+        if st.button("Apply", key="apply_std_text"):
+            for c in cols:
+                df_work[c] = (
+                    df_work[c].astype(str)
+                    .str.strip()
+                    .str.replace(r"\s+", " ", regex=True)
+                    .str.normalize("NFKC")
+                )
+            st.session_state.df_clean = df_work
+            st.session_state.pipeline.append({"step": "standardize_text", "args": {"cols": cols}})
+            st.success("Text categories standardized (trim + whitespace normalization).")
+
     # 导出
     st.markdown("### Export cleaned data")
     export_df = (
@@ -733,6 +805,10 @@ with tab_viz:
     st.markdown("### Interactive mode (Plotly / Leaflet)")
     inter_mode = st.radio("Pick interactive engine", ["Auto", "Plotly", "Leaflet (map)"], horizontal=True)
 
+    # Color-blind friendly toggle
+    cb = st.toggle("Color-blind friendly palette", value=False)
+    palette_seq = CB_SAFE if cb else None
+
     # Helper: detect geo possibilities
     def _has_latlon(cols):
         lc = [str(c).lower() for c in cols]
@@ -765,6 +841,8 @@ with tab_viz:
         if inter_mode == "Auto" and recommended in ["map_latlon", "map_country"]:
             inter_mode = "Leaflet (map)"
 
+    role = st.session_state.roles
+
     # --- Plotly path (with Line index option added) ---
     if inter_mode in ["Auto", "Plotly"]:
         st.write("**Preview of current plotting data:**")
@@ -779,8 +857,13 @@ with tab_viz:
             if not num_cols or not x_candidates:
                 st.warning("You need at least one numeric column for Y and one column for X.")
             else:
-                x = st.selectbox("X Column", x_candidates)
-                y = st.selectbox("Y (Numeric Column)", num_cols)
+                pref_x = role.get("time") or role.get("category")
+                pref_y = role.get("value")
+                x_index = x_candidates.index(pref_x) if pref_x in x_candidates else 0
+                y_index = num_cols.index(pref_y) if pref_y in num_cols else 0
+
+                x = st.selectbox("X Column", x_candidates, index=x_index)
+                y = st.selectbox("Y (Numeric Column)", num_cols, index=y_index)
                 color = st.selectbox("Grouping/Color (optional)", ["(none)"] + [c for c in plot_df.columns if c not in [x, y]])
                 hover = st.multiselect("Extra hover fields", [c for c in plot_df.columns if c not in [x, y]])
                 if plot_df[x].dtype == "object":
@@ -790,8 +873,11 @@ with tab_viz:
                         pass
                 fig = px.line(
                     plot_df.sort_values(x),
-                    x=x, y=y, color=None if color == "(none)" else color,
-                    markers=True, hover_data=hover, title=f"{y} over {x}"
+                    x=x, y=y,
+                    color=None if color == "(none)" else color,
+                    markers=True, hover_data=hover,
+                    title=f"{y} over {x}",
+                    color_discrete_sequence=palette_seq
                 )
                 fig.update_traces(hovertemplate=f"{x}=%{{x}}<br>{y}=%{{y:.3f}}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
@@ -800,10 +886,13 @@ with tab_viz:
             if not num_cols:
                 st.warning("At least one numeric column is required.")
             else:
-                y = st.selectbox("Numeric column (Y)", num_cols)
+                pref_y = role.get("value")
+                y_index = num_cols.index(pref_y) if pref_y in num_cols else 0
+                y = st.selectbox("Numeric column (Y)", num_cols, index=y_index)
                 df_idx = plot_df.reset_index()
                 idx = df_idx.columns[0]
-                fig = px.line(df_idx, x=idx, y=y, markers=True, title=f"{y} over row index")
+                fig = px.line(df_idx, x=idx, y=y, markers=True, title=f"{y} over row index",
+                              color_discrete_sequence=palette_seq)
                 fig.update_traces(hovertemplate=f"Index=%{{x}}<br>{y}=%{{y:.3f}}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -811,15 +900,25 @@ with tab_viz:
             if not num_cols or not (cat_cols or dt_cols):
                 st.warning("A grouping column (category or time) and a numeric column are required.")
             else:
-                x = st.selectbox("Grouping Column (X)", cat_cols + dt_cols)
-                y = st.selectbox("Numeric Column (Y)", num_cols)
+                pref_x = role.get("category") or role.get("time")
+                pref_y = role.get("value")
+                group_candidates = cat_cols + dt_cols
+                x_index = group_candidates.index(pref_x) if pref_x in group_candidates else 0
+                y_index = num_cols.index(pref_y) if pref_y in num_cols else 0
+
+                x = st.selectbox("Grouping Column (X)", group_candidates, index=x_index)
+                y = st.selectbox("Numeric Column (Y)", num_cols, index=y_index)
                 agg = st.selectbox("Aggregation", ["mean","sum","median"])
                 df_agg = getattr(plot_df.groupby(x)[y], agg)().reset_index()
                 if x in dt_cols:
-                    fig = px.line(df_agg.sort_values(x), x=x, y=y, markers=True, title=f"{agg.title()} of {y} over {x}")
+                    fig = px.line(df_agg.sort_values(x), x=x, y=y, markers=True,
+                                  title=f"{agg.title()} of {y} over {x}",
+                                  color_discrete_sequence=palette_seq)
                     fig.update_traces(hovertemplate=f"{x}=%{{x}}<br>{y}=%{{y:.3f}}<extra></extra>")
                 else:
-                    fig = px.bar(df_agg, x=y, y=x, orientation="h", title=f"{agg.title()} of {y} by {x}")
+                    fig = px.bar(df_agg, x=y, y=x, orientation="h",
+                                 title=f"{agg.title()} of {y} by {x}",
+                                 color_discrete_sequence=palette_seq)
                     fig.update_traces(hovertemplate=f"{x}=%{{y}}<br>{y}=%{{x:.3f}}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -827,8 +926,10 @@ with tab_viz:
             if len(num_cols) < 2:
                 st.warning("At least two numeric columns are required.")
             else:
+                pref_y = role.get("value")
+                y_index = num_cols.index(pref_y) if pref_y in num_cols else 1 if len(num_cols) > 1 else 0
                 x = st.selectbox("X (numeric)", num_cols, key="px_sc_x")
-                y = st.selectbox("Y (numeric)", num_cols, key="px_sc_y")
+                y = st.selectbox("Y (numeric)", num_cols, index=y_index, key="px_sc_y")
                 color = st.selectbox("Color (optional)", ["(none)"] + cat_cols, key="px_sc_c")
                 size  = st.selectbox("Bubble size (optional)", ["(none)"] + num_cols, key="px_sc_s")
                 hover = st.multiselect("Extra hover fields", [c for c in plot_df.columns if c not in [x, y]])
@@ -836,7 +937,8 @@ with tab_viz:
                     plot_df, x=x, y=y,
                     color=None if color=="(none)" else color,
                     size=None if size=="(none)" else size,
-                    hover_data=hover, trendline=None, title=f"{y} vs {x}"
+                    hover_data=hover, trendline=None, title=f"{y} vs {x}",
+                    color_discrete_sequence=palette_seq
                 )
                 fig.update_traces(hovertemplate=f"{x}=%{{x:.3f}}<br>{y}=%{{y:.3f}}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
@@ -845,9 +947,13 @@ with tab_viz:
             if not num_cols:
                 st.warning("No numeric columns detected.")
             else:
-                col = st.selectbox("Numeric column", num_cols)
+                pref_y = role.get("value")
+                col_index = num_cols.index(pref_y) if pref_y in num_cols else 0
+                col = st.selectbox("Numeric column", num_cols, index=col_index)
                 bins = st.slider("Bins", 5, 80, 30)
-                fig = px.histogram(plot_df, x=col, nbins=bins, title=f"Histogram — {col}")
+                fig = px.histogram(plot_df, x=col, nbins=bins,
+                                   title=f"Histogram — {col}",
+                                   color_discrete_sequence=palette_seq)
                 fig.update_traces(hovertemplate=f"{col}=%{{x}}<br>Count=%{{y}}<extra></extra>")
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -876,21 +982,25 @@ with tab_viz:
             center_lat = plot_df[lat_col].dropna().astype(float).mean() if not plot_df[lat_col].dropna().empty else 3.1390
             center_lon = plot_df[lon_col].dropna().astype(float).mean() if not plot_df[lon_col].dropna().empty else 101.6869
             m = folium.Map(location=[center_lat, center_lon], tiles="OpenStreetMap", zoom_start=4)
+            cluster = MarkerCluster().add_to(m)
             for _, row in plot_df.dropna(subset=[lat_col, lon_col]).iterrows():
                 popup_text = None if popup_col=="(none)" else str(row[popup_col])
                 folium.CircleMarker(
                     location=[float(row[lat_col]), float(row[lon_col])],
                     radius=4, weight=1, fill=True, popup=popup_text
-                ).add_to(m)
+                ).add_to(cluster)
             st_folium(m, use_container_width=True, returned_objects=[])
 
         elif country_col and num_cols:
             target_metric = st.selectbox("Metric (numeric)", num_cols)
+            mode = st.selectbox("Country reference", ["auto (names)", "ISO-2", "ISO-3"])
+            locmode = {"auto (names)":"country names", "ISO-2":"ISO-2", "ISO-3":"ISO-3"}[mode]
             fig = px.choropleth(
                 plot_df.dropna(subset=[country_col]),
-                locations=country_col, locationmode="country names",
+                locations=country_col, locationmode=locmode,
                 color=target_metric, hover_name=country_col,
-                title=f"{target_metric} by Country"
+                title=f"{target_metric} by Country",
+                color_continuous_scale="RdPu"
             )
             fig.update_geos(fitbounds="locations", visible=False)
             st.plotly_chart(fig, use_container_width=True)
