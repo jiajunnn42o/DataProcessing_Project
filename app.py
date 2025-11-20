@@ -780,12 +780,12 @@ with col_left:
 
 # 右边：Visualise + Report
 with col_right:
-    tab_viz, tab_report = st.tabs(["Visualise", "Report"])
+    tab_viz, tab_report = st.tabs(["Results", "Report"])
     # ----------------------------
     # 3) Visualise (dataset-agnostic by default)
     # ----------------------------
     with tab_viz:
-        st.subheader("Visualisations")
+        st.subheader("Results")
 
         # Pick the active dataframe
         if st.session_state.df_clean is not None and not st.session_state.df_clean.empty:
